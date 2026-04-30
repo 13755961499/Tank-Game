@@ -99,9 +99,28 @@ class Tank {
  * 玩家坦克
  */
 class PlayerTank extends Tank {
-    constructor(x, y) {
+    constructor(x, y, id = null) {
         super(x, y, CONFIG.DIRECTIONS.UP, CONFIG.COLORS.PLAYER);
         this.speed = CONFIG.PLAYER_SPEED;
+        this.id = id; // 网络对战时的唯一标识
+    }
+}
+
+/**
+ * 远程玩家坦克 (网络对战)
+ */
+class RemoteTank extends Tank {
+    constructor(x, y, direction, color, id) {
+        super(x, y, direction, color);
+        this.id = id;
+        this.speed = CONFIG.PLAYER_SPEED;
+    }
+
+    updateState(data) {
+        this.x = data.x;
+        this.y = data.y;
+        this.direction = data.direction;
+        this.hp = data.hp;
     }
 }
 

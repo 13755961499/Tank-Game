@@ -32,15 +32,23 @@ class MapSystem {
         this._addBlocks(15, 3, 2, 4, CONFIG.TILE_TYPES.BRICK);
         this._addBlocks(15, 17, 2, 4, CONFIG.TILE_TYPES.BRICK);
 
+        // 添加水面区域 (不可通行，子弹可通过)
+        this._addBlocks(8, 8, 10, 2, CONFIG.TILE_TYPES.WATER);
+
+        // 添加草地区域 (可通行，遮挡视线)
+        this._addBlocks(4, 5, 3, 3, CONFIG.TILE_TYPES.GRASS);
+        this._addBlocks(4, 18, 3, 3, CONFIG.TILE_TYPES.GRASS);
+        this._addBlocks(14, 10, 6, 2, CONFIG.TILE_TYPES.GRASS);
+
         // 老家 (Base)
         const midX = Math.floor(CONFIG.MAP_COLS / 2);
         this.grid[CONFIG.MAP_ROWS - 2][midX] = CONFIG.TILE_TYPES.BASE;
-        // 保护老家的围墙 (初始为砖墙，可通过道具升级)
-        this.grid[CONFIG.MAP_ROWS - 2][midX - 1] = CONFIG.TILE_TYPES.BRICK;
-        this.grid[CONFIG.MAP_ROWS - 2][midX + 1] = CONFIG.TILE_TYPES.BRICK;
-        this.grid[CONFIG.MAP_ROWS - 3][midX - 1] = CONFIG.TILE_TYPES.BRICK;
-        this.grid[CONFIG.MAP_ROWS - 3][midX] = CONFIG.TILE_TYPES.BRICK;
-        this.grid[CONFIG.MAP_ROWS - 3][midX + 1] = CONFIG.TILE_TYPES.BRICK;
+        // 保护老家的围墙 (仅正面三块加固为钢墙，侧面保留为砖墙)
+        this.grid[CONFIG.MAP_ROWS - 2][midX - 1] = CONFIG.TILE_TYPES.BRICK; // 左侧
+        this.grid[CONFIG.MAP_ROWS - 2][midX + 1] = CONFIG.TILE_TYPES.BRICK; // 右侧
+        this.grid[CONFIG.MAP_ROWS - 3][midX - 1] = CONFIG.TILE_TYPES.STEEL; // 正面左
+        this.grid[CONFIG.MAP_ROWS - 3][midX] = CONFIG.TILE_TYPES.STEEL;     // 正面中
+        this.grid[CONFIG.MAP_ROWS - 3][midX + 1] = CONFIG.TILE_TYPES.STEEL; // 正面右
     }
 
     _addBlocks(row, col, w, h, type) {
@@ -53,12 +61,22 @@ class MapSystem {
         }
     }
 
-    draw(ctx) {
+    draw(ctx, layer = 'bottom') {
         for (let r = 0; r < CONFIG.MAP_ROWS; r++) {
             for (let c = 0; c < CONFIG.MAP_COLS; c++) {
                 const type = this.grid[r][c];
-                if (type !== CONFIG.TILE_TYPES.EMPTY) {
-                    SpriteRenderer.drawTile(ctx, type, c * CONFIG.TILE_SIZE, r * CONFIG.TILE_SIZE);
+                if (type === CONFIG.TILE_TYPES.EMPTY) continue;
+
+                if (layer === 'bottom') {
+                    // 底部层：砖墙、钢墙、水面、老家
+                    if (type !== CONFIG.TILE_TYPES.GRASS) {
+                        SpriteRenderer.drawTile(ctx, type, c * CONFIG.TILE_SIZE, r * CONFIG.TILE_SIZE);
+                    }
+                } else if (layer === 'top') {
+                    // 顶部层：草地 (遮盖坦克)
+                    if (type === CONFIG.TILE_TYPES.GRASS) {
+                        SpriteRenderer.drawTile(ctx, type, c * CONFIG.TILE_SIZE, r * CONFIG.TILE_SIZE);
+                    }
                 }
             }
         }
@@ -113,16 +131,19 @@ class MapSystem {
     }
 
     /**
-     * 临时加固/恢复老家
+     * 临时加固/恢复老家 (适配新需求：正面永久钢墙，仅侧面随道具切换)
      */
     reinforceBase(reinforced) {
         const midX = Math.floor(CONFIG.MAP_COLS / 2);
-        const type = reinforced ? CONFIG.TILE_TYPES.STEEL : CONFIG.TILE_TYPES.BRICK;
         
-        this.grid[CONFIG.MAP_ROWS - 2][midX - 1] = type;
-        this.grid[CONFIG.MAP_ROWS - 2][midX + 1] = type;
-        this.grid[CONFIG.MAP_ROWS - 3][midX - 1] = type;
-        this.grid[CONFIG.MAP_ROWS - 3][midX] = type;
-        this.grid[CONFIG.MAP_ROWS - 3][midX + 1] = type;
+        // 正面三块保持永久钢墙
+        this.grid[CONFIG.MAP_ROWS - 3][midX - 1] = CONFIG.TILE_TYPES.STEEL;
+        this.grid[CONFIG.MAP_ROWS - 3][midX] = CONFIG.TILE_TYPES.STEEL;
+        this.grid[CONFIG.MAP_ROWS - 3][midX + 1] = CONFIG.TILE_TYPES.STEEL;
+
+        // 侧面两块根据道具状态在钢墙和砖墙之间切换
+        const sideType = reinforced ? CONFIG.TILE_TYPES.STEEL : CONFIG.TILE_TYPES.BRICK;
+        this.grid[CONFIG.MAP_ROWS - 2][midX - 1] = sideType;
+        this.grid[CONFIG.MAP_ROWS - 2][midX + 1] = sideType;
     }
 }

@@ -61,12 +61,32 @@ const SpriteRenderer = {
                 break;
             case CONFIG.TILE_TYPES.GRASS:
                 ctx.fillStyle = CONFIG.COLORS.GRASS;
-                ctx.globalAlpha = 0.6;
                 ctx.fillRect(x, y, s, s);
+                // 绘制草丛纹理
+                ctx.strokeStyle = '#27ae60';
+                ctx.lineWidth = 1;
+                for (let i = 0; i < 4; i++) {
+                    const ox = (i % 2) * (s/2);
+                    const oy = Math.floor(i / 2) * (s/2);
+                    ctx.beginPath();
+                    ctx.moveTo(x + ox + 4, y + oy + s/2 - 4);
+                    ctx.lineTo(x + ox + s/4, y + oy + 4);
+                    ctx.lineTo(x + ox + s/2 - 4, y + oy + s/2 - 4);
+                    ctx.stroke();
+                }
                 break;
             case CONFIG.TILE_TYPES.WATER:
                 ctx.fillStyle = CONFIG.COLORS.WATER;
                 ctx.fillRect(x, y, s, s);
+                // 绘制波纹纹理
+                ctx.strokeStyle = '#ebf5fb';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(x + 5, y + s/3);
+                ctx.lineTo(x + s - 5, y + s/3);
+                ctx.moveTo(x + 10, y + (s*2)/3);
+                ctx.lineTo(x + s - 10, y + (s*2)/3);
+                ctx.stroke();
                 break;
             case CONFIG.TILE_TYPES.BASE:
                 ctx.fillStyle = CONFIG.COLORS.BASE;

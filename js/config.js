@@ -14,7 +14,7 @@ const CONFIG = {
     BULLET_SIZE: 6,
     
     // 游戏机制
-    INITIAL_HP: 3,
+    INITIAL_HP: 5,
     ENEMY_SPAWN_RATE: 0.01, // 每一帧生成敌人的概率
     MAX_ENEMIES: 5,
     
