@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>坦克大战 - Tank Game (Pro)</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="ui-layer">
+            <!-- 开始界面 -->
+            <div id="start-screen" class="overlay">
+                <h1>坦克大战</h1>
+                <div class="menu">
+                    <button id="start-btn">开始游戏</button>
+                    <div class="instructions">
+                        <p>方向键: 移动</p>
+                        <p>空格键: 射击</p>
+                        <p>ESC: 暂停</p>
+                        <p class="feature-note">特性：子弹可以相互抵消</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 暂停界面 -->
+            <div id="pause-screen" class="overlay hidden">
+                <h1>游戏暂停</h1>
+                <button id="resume-btn">继续游戏</button>
+            </div>
+
+            <!-- 结算界面 -->
+            <div id="game-over-screen" class="overlay hidden">
+                <h1 id="game-over-title">游戏结束</h1>
+                <div class="stats-box">
+                    <p>最终得分: <span id="final-score">0</span></p>
+                </div>
+                <button id="restart-btn">重新开始</button>
+            </div>
+
+            <!-- 实时数据面板 -->
+            <div id="hud">
+                <div class="hud-item">
+                    <span class="label">HP:</span>
+                    <span id="hp-value">3</span>
+                </div>
+                <div class="hud-item">
+                    <span class="label">SCORE:</span>
+                    <span id="score-value">0</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 脚本加载 -->
+    <script src="js/config.js"></script>
+    <script src="js/audio.js"></script>
+    <script src="js/sprite.js"></script>
+    <!-- 实体类 -->
+    <script src="js/bullet.js"></script>
+    <script src="js/tank.js"></script>
+    <script src="js/powerup.js"></script>
+    <!-- 地图系统 -->
+    <script src="js/map.js"></script>
+    <script src="js/game.js"></script>
+</body>
+</html>
