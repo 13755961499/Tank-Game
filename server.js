@@ -14,7 +14,178 @@ app.use(express.static(__dirname));
 
 // 游戏状态
 let players = {};
-let mapData = null; // 用于同步地图状态（如被破坏的墙）
+let enemies = {}; // 服务端管理的AI敌人
+let mapData = null;
+let enemyIdCounter = 0;
+let teamScore = 0; // 全局团队分数
+
+// 初始化服务端地图数据 (用于 AI 碰撞检测)
+function initServerMap() {
+    const rows = 20;
+    const cols = 26;
+    mapData = [];
+    for (let r = 0; r < rows; r++) {
+        mapData[r] = [];
+        for (let c = 0; c < cols; c++) {
+            // 边界墙
+            if (r === 0 || r === rows - 1 || c === 0 || c === cols - 1) {
+                mapData[r][c] = 2; // STEEL
+            } else {
+                mapData[r][c] = 0; // EMPTY
+            }
+        }
+    }
+
+    // 辅助函数添加障碍物 (对应 map.js 的布局)
+    const addBlocks = (row, col, w, h, type) => {
+        for (let r = row; r < row + h; r++) {
+            for (let c = col; c < col + w; c++) {
+                if (mapData[r]) mapData[r][c] = type;
+            }
+        }
+    };
+
+    addBlocks(3, 3, 2, 4, 1);   // BRICK
+    addBlocks(3, 10, 2, 4, 1);  // BRICK
+    addBlocks(3, 17, 2, 4, 1);  // BRICK
+    addBlocks(10, 5, 4, 2, 2);  // STEEL
+    addBlocks(10, 15, 4, 2, 2); // STEEL
+    addBlocks(15, 3, 2, 4, 1);  // BRICK
+    addBlocks(15, 17, 2, 4, 1); // BRICK
+    addBlocks(8, 8, 10, 2, 4);  // WATER
+    
+    // 老家位置
+    const midX = 13;
+    mapData[18][midX] = 9;      // BASE
+    mapData[18][midX-1] = 1;    // BRICK
+    mapData[18][midX+1] = 1;    // BRICK
+    mapData[17][midX-1] = 2;    // STEEL
+    mapData[17][midX] = 2;      // STEEL
+    mapData[17][midX+1] = 2;    // STEEL
+}
+
+initServerMap();
+
+// 服务端碰撞检测
+function checkCollision(x, y) {
+    const size = 32;
+    const padding = 4; // 碰撞边距
+    const rect = {
+        left: x + padding,
+        right: x + size - padding,
+        top: y + padding,
+        bottom: y + size - padding
+    };
+
+    const startCol = Math.floor(rect.left / size);
+    const endCol = Math.floor(rect.right / size);
+    const startRow = Math.floor(rect.top / size);
+    const endRow = Math.floor(rect.bottom / size);
+
+    for (let r = startRow; r <= endRow; r++) {
+        for (let c = startCol; c <= endCol; c++) {
+            if (mapData[r] && mapData[r][c]) {
+                const type = mapData[r][c];
+                // 1: BRICK, 2: STEEL, 4: WATER, 9: BASE
+                if (type === 1 || type === 2 || type === 4 || type === 9) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+// 封装生成 AI 的逻辑
+function spawnEnemy() {
+    if (Object.keys(enemies).length >= 6) return;
+    const id = `ai_${enemyIdCounter++}`;
+    
+    // 使用固定的安全出生点
+    const spawnPoints = [
+        { x: 1 * 32, y: 1 * 32 },
+        { x: 12 * 32, y: 1 * 32 },
+        { x: 24 * 32, y: 1 * 32 }
+    ];
+    const point = spawnPoints[Math.floor(Math.random() * spawnPoints.length)];
+    
+    enemies[id] = {
+        id,
+        x: point.x,
+        y: point.y,
+        direction: 1, // DOWN
+        type: 'ai'
+    };
+    console.log(`[SERVER] 生成 AI 敌人: ${id} at (${point.x}, ${point.y})`);
+    io.emit('enemySpawned', enemies[id]);
+}
+
+// 服务端AI逻辑
+function updateAI() {
+    // 如果没有玩家在线，不更新 AI 以节省资源
+    if (Object.keys(players).length === 0) return;
+
+    // 1. 尝试生成敌人
+    if (Object.keys(enemies).length < 6 && Math.random() < 0.1) {
+        spawnEnemy();
+    }
+
+    // 2. 简单的AI移动逻辑
+    for (let id in enemies) {
+        const enemy = enemies[id];
+        
+        // 提高移动速度：每次更新移动 4 像素
+        const speed = 4;
+        let nextX = enemy.x;
+        let nextY = enemy.y;
+
+        if (enemy.direction === 0) nextY -= speed;
+        else if (enemy.direction === 1) nextY += speed;
+        else if (enemy.direction === 2) nextX -= speed;
+        else if (enemy.direction === 3) nextX += speed;
+
+        // 碰撞检测与卡住处理
+        if (checkCollision(nextX, nextY)) {
+            // 如果撞墙了，立即随机换个方向，下次更新再走
+            enemy.direction = Math.floor(Math.random() * 4);
+        } else {
+            // 没撞墙才更新位置
+            enemy.x = nextX;
+            enemy.y = nextY;
+            
+            // 正常行驶中也有小概率随机换向，增加灵活性
+            if (Math.random() < 0.05) {
+                enemy.direction = Math.floor(Math.random() * 4);
+            }
+        }
+
+        // 3. 随机射击逻辑 (增加射击同步)
+        if (Math.random() < 0.08) {
+            // 计算子弹起始位置（炮管口）
+            let bx = enemy.x + 16;
+            let by = enemy.y + 16;
+            const offset = 16;
+            if (enemy.direction === 0) by -= offset;
+            else if (enemy.direction === 1) by += offset;
+            else if (enemy.direction === 2) bx -= offset;
+            else if (enemy.direction === 3) bx += offset;
+
+            io.emit('enemyShoot', {
+                x: bx,
+                y: by,
+                direction: enemy.direction,
+                type: 'enemy'
+            });
+        }
+    }
+
+    if (Object.keys(enemies).length > 0) {
+        io.emit('enemiesMoved', enemies);
+    }
+}
+
+// 提高更新频率：从 100ms 改为 50ms
+setInterval(updateAI, 50);
 
 io.on('connection', (socket) => {
     console.log('玩家连接:', socket.id);
@@ -22,6 +193,11 @@ io.on('connection', (socket) => {
     // 发送当前地图状态给新玩家
     if (mapData) {
         socket.emit('mapUpdate', mapData);
+    }
+
+    // 发送当前已存在的 AI 给新玩家
+    if (Object.keys(enemies).length > 0) {
+        socket.emit('currentEnemies', enemies);
     }
 
     // 处理新玩家加入
@@ -35,10 +211,19 @@ io.on('connection', (socket) => {
             hp: playerData.hp,
             score: playerData.score
         };
+        console.log(`玩家 ${socket.id} 加入游戏，当前在线人数: ${Object.keys(players).length}`);
+
         // 广播给其他玩家
         socket.broadcast.emit('playerJoined', players[socket.id]);
         // 发送现有玩家列表给新玩家
         socket.emit('currentPlayers', players);
+        // 发送当前团队分数给新加入的玩家
+        socket.emit('scoreUpdate', teamScore);
+
+        // 如果这是第一个玩家，立即尝试生成一个 AI
+        if (Object.keys(players).length === 1 && Object.keys(enemies).length === 0) {
+            spawnEnemy();
+        }
     });
 
     // 处理玩家移动
@@ -59,13 +244,45 @@ io.on('connection', (socket) => {
         });
     });
 
+    // 处理AI被击中
+    socket.on('enemyHit', (data) => {
+        if (enemies[data.id]) {
+            delete enemies[data.id];
+            
+            // 增加团队分数并同步给所有玩家
+            teamScore += 100;
+            io.emit('scoreUpdate', teamScore);
+            
+            io.emit('enemyDestroyed', data.id);
+            
+            // 3秒后自动补充一个敌人
+            setTimeout(() => {
+                if (Object.keys(players).length > 0) {
+                    spawnEnemy();
+                }
+            }, 3000);
+        }
+    });
+
     // 处理地图更新（墙体破坏）
     socket.on('tileDestroyed', (data) => {
         // data: { row, col }
+        if (mapData && mapData[data.row]) {
+            mapData[data.row][data.col] = 0; // 同步服务端地图状态
+        }
         socket.broadcast.emit('tileDestroyed', data);
     });
 
-    // 处理玩家受伤/死亡
+    // 处理玩家状态更新 (血量、分数等)
+    socket.on('playerUpdate', (data) => {
+        if (players[socket.id]) {
+            if (data.hp !== undefined) players[socket.id].hp = data.hp;
+            if (data.score !== undefined) players[socket.id].score = data.score;
+            socket.broadcast.emit('playerUpdate', players[socket.id]);
+        }
+    });
+
+    // 兼容旧的 playerHit 事件
     socket.on('playerHit', (data) => {
         if (players[socket.id]) {
             players[socket.id].hp = data.hp;
@@ -81,6 +298,40 @@ io.on('connection', (socket) => {
     });
 });
 
-server.listen(PORT, () => {
-    console.log(`坦克大战服务器运行在: http://localhost:${PORT}`);
+const os = require('os');
+
+function getLocalIPs() {
+    const interfaces = os.networkInterfaces();
+    const ips = [];
+    for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name]) {
+            if (iface.family === 'IPv4' && !iface.internal) {
+                ips.push({ name, address: iface.address });
+            }
+        }
+    }
+    // 排序：优先显示 192.168 开头的常用局域网地址
+    ips.sort((a, b) => {
+        if (a.address.startsWith('192.168')) return -1;
+        if (b.address.startsWith('192.168')) return 1;
+        return 0;
+    });
+    return ips;
+}
+
+const allIPs = getLocalIPs();
+
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`坦克大战服务器已启动！`);
+    console.log(`- 本地访问: http://localhost:${PORT}`);
+    
+    if (allIPs.length > 0) {
+        console.log(`- 局域网访问地址 (请尝试以下地址):`);
+        allIPs.forEach(ip => {
+            console.log(`  > http://${ip.address}:${PORT}  (${ip.name})`);
+        });
+    }
+
+    console.log(`\n提示: 如果他人无法访问，请检查 Windows 防火墙是否允许 ${PORT} 端口。`);
+    console.log(`注意: 2.0.0.1 通常是虚拟网卡(如虚拟机的网卡)，联机请优先使用 192.168.x.x 开头的地址。`);
 });

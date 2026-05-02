@@ -67,9 +67,11 @@ class Game {
         this.score = 0;
         this.hp = CONFIG.INITIAL_HP;
         
-        // 随机生成起始位置 (网络模式)
-        const startX = multiplayer ? (1 + Math.floor(Math.random() * (CONFIG.MAP_COLS - 2))) * CONFIG.TILE_SIZE : CONFIG.TILE_SIZE * 10;
-        const startY = multiplayer ? (CONFIG.MAP_ROWS - 2) * CONFIG.TILE_SIZE : CONFIG.TILE_SIZE * (CONFIG.MAP_ROWS - 2);
+        // 使用固定的安全出生点
+        const playerPoints = CONFIG.SPAWN_POINTS.PLAYER;
+        const spawnPoint = playerPoints[Math.floor(Math.random() * playerPoints.length)];
+        const startX = spawnPoint.x * CONFIG.TILE_SIZE;
+        const startY = spawnPoint.y * CONFIG.TILE_SIZE;
         
         this.player = new PlayerTank(startX, startY);
         this.enemies = [];
@@ -93,6 +95,12 @@ class Game {
     }
 
     initSocket() {
+        if (typeof io === 'undefined') {
+            alert('无法加载 Socket.io。请确保你是通过 http://localhost:3000 访问游戏，并且已经运行了服务器 (node server.js)。');
+            this.state = 'START';
+            document.getElementById('start-screen').classList.remove('hidden');
+            return;
+        }
         if (this.socket) this.socket.disconnect();
         this.socket = io();
 
@@ -117,6 +125,49 @@ class Game {
             }
         });
 
+        this.socket.on('currentEnemies', (enemiesData) => {
+            console.log('[DEBUG] 收到初始化 AI 列表:', enemiesData);
+            for (let id in enemiesData) {
+                const enemy = enemiesData[id];
+                if (!this.enemies.find(e => e.id === id)) {
+                    const e = new EnemyTank(enemy.x, enemy.y);
+                    e.id = id;
+                    this.enemies.push(e);
+                }
+            }
+        });
+
+        this.socket.on('enemySpawned', (enemy) => {
+            console.log('[DEBUG] 收到新 AI 生成事件:', enemy);
+            const e = new EnemyTank(enemy.x, enemy.y);
+            e.id = enemy.id;
+            this.enemies.push(e);
+        });
+
+        this.socket.on('enemiesMoved', (enemiesData) => {
+            // 只有当本地没有收到过移动日志时才打印一次，避免刷屏
+            if (!this._hasLoggedMove) {
+                console.log('[DEBUG] 收到 AI 移动同步数据');
+                this._hasLoggedMove = true;
+            }
+            this.enemies.forEach(e => {
+                if (enemiesData[e.id]) {
+                    e.x = enemiesData[e.id].x;
+                    e.y = enemiesData[e.id].y;
+                    e.direction = enemiesData[e.id].direction;
+                }
+            });
+        });
+
+        this.socket.on('enemyDestroyed', (id) => {
+            const index = this.enemies.findIndex(e => e.id === id);
+            if (index !== -1) {
+                const enemy = this.enemies[index];
+                this.createExplosion(enemy.x + 16, enemy.y + 16);
+                this.enemies.splice(index, 1);
+            }
+        });
+
         this.socket.on('playerJoined', (p) => {
             this.remotePlayers[p.id] = new RemoteTank(p.x, p.y, p.direction, p.color, p.id);
         });
@@ -136,8 +187,20 @@ class Game {
             delete this.remotePlayers[id];
         });
 
+        this.socket.on('playerUpdate', (p) => {
+            if (this.remotePlayers[p.id]) {
+                this.remotePlayers[p.id].hp = p.hp;
+                this.remotePlayers[p.id].score = p.score;
+            }
+        });
+
         this.socket.on('tileDestroyed', (data) => {
             this.map.grid[data.row][data.col] = CONFIG.TILE_TYPES.EMPTY;
+        });
+
+        this.socket.on('scoreUpdate', (score) => {
+            this.score = score;
+            this.updateHUD();
         });
     }
 
@@ -186,11 +249,16 @@ class Game {
     update() {
         const dt = 16;
 
-        // 1. 生成敌人 (仅单机模式)
-        if (!this.isMultiplayer && this.enemies.length < CONFIG.MAX_ENEMIES && Math.random() < CONFIG.ENEMY_SPAWN_RATE) {
-            const spawnCols = [1, 13, 24];
-            const col = spawnCols[Math.floor(Math.random() * spawnCols.length)];
-            this.enemies.push(new EnemyTank(col * CONFIG.TILE_SIZE, 1 * CONFIG.TILE_SIZE));
+        // 1. 生成敌人 (仅单机模式，3秒补充逻辑)
+        if (!this.isMultiplayer && this.enemies.length < CONFIG.MAX_ENEMIES) {
+            if (!this.lastEnemySpawnTime) this.lastEnemySpawnTime = 0;
+            const now = Date.now();
+            if (now - this.lastEnemySpawnTime > 3000) {
+                const enemyPoints = CONFIG.SPAWN_POINTS.ENEMY;
+                const spawnPoint = enemyPoints[Math.floor(Math.random() * enemyPoints.length)];
+                this.enemies.push(new EnemyTank(spawnPoint.x * CONFIG.TILE_SIZE, spawnPoint.y * CONFIG.TILE_SIZE));
+                this.lastEnemySpawnTime = now;
+            }
         }
 
         // 2. 玩家控制
@@ -209,11 +277,13 @@ class Game {
             });
         }
 
-        // 3. 更新 AI (仅单机模式)
-        this.enemies.forEach(enemy => {
-            const b = enemy.update(dt, this.map, [this.player, ...this.enemies]);
-            if (b) this.bullets.push(b);
-        });
+        // 3. 更新 AI (仅单机模式处理移动，网络模式由服务端同步)
+        if (!this.isMultiplayer) {
+            this.enemies.forEach(enemy => {
+                const b = enemy.update(dt, this.map, [this.player, ...this.enemies]);
+                if (b) this.bullets.push(b);
+            });
+        }
 
         // 4. 更新子弹逻辑
         this._updateBullets();
@@ -270,7 +340,12 @@ class Game {
             // 与坦克碰撞
             const targets = [this.player, ...Object.values(this.remotePlayers), ...this.enemies];
             for (let tank of targets) {
-                if (!tank.active || (tank === this.player && bullet.owner === 'player')) continue;
+                // 排除无效目标，以及：
+                // 1. 玩家子弹不伤自己
+                // 2. 敌人子弹不伤敌人 (防止自相残杀)
+                if (!tank.active) continue;
+                if (tank === this.player && bullet.owner === 'player') continue;
+                if (tank instanceof EnemyTank && bullet.owner === 'enemy') continue;
                 
                 if (this._checkCollision(bullet.getRect(), tank.getRect())) {
                     bullet.active = false;
@@ -285,12 +360,17 @@ class Game {
                         }
                         if (this.hp <= 0) this.gameOver();
                     } else if (tank instanceof EnemyTank) {
-                        tank.active = false;
-                        this.score += 100;
-                        this.updateHUD();
-                        if (Math.random() < CONFIG.POWERUP_CHANCE) {
-                            const types = Object.values(CONFIG.POWERUP_TYPES);
-                            this.powerups.push(new Powerup(tank.x, tank.y, types[Math.floor(Math.random() * types.length)]));
+                        if (this.isMultiplayer) {
+                            this.socket.emit('enemyHit', { id: tank.id });
+                            // 联机模式下不再由本地计算分数，而是等待服务器广播 scoreUpdate
+                        } else {
+                            tank.active = false;
+                            this.score += 100;
+                            this.updateHUD();
+                            if (Math.random() < CONFIG.POWERUP_CHANCE) {
+                                const types = Object.values(CONFIG.POWERUP_TYPES);
+                                this.powerups.push(new Powerup(tank.x, tank.y, types[Math.floor(Math.random() * types.length)]));
+                            }
                         }
                     } else if (tank instanceof RemoteTank) {
                         // 远程玩家的血量由他们自己计算并同步

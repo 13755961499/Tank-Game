@@ -16,7 +16,7 @@ const CONFIG = {
     // 游戏机制
     INITIAL_HP: 5,
     ENEMY_SPAWN_RATE: 0.01, // 每一帧生成敌人的概率
-    MAX_ENEMIES: 5,
+    MAX_ENEMIES: 6,
     
     // 道具配置
     POWERUP_TYPES: {
@@ -56,6 +56,21 @@ const CONFIG = {
         DOWN: 1,
         LEFT: 2,
         RIGHT: 3
+    },
+
+    // 固定出生点配置 (网格坐标)
+    SPAWN_POINTS: {
+        ENEMY: [
+            { x: 1, y: 1 },   // 左上
+            { x: 12, y: 1 },  // 中上 (避开中间钢墙)
+            { x: 24, y: 1 }   // 右上
+        ],
+        PLAYER: [
+            { x: 8, y: 18 },  // 下左 (老家左侧空地)
+            { x: 17, y: 18 }, // 下右 (老家右侧空地)
+            { x: 1, y: 18 },  // 左下角
+            { x: 24, y: 18 }  // 右下角
+        ]
     }
 };
 
