@@ -49,6 +49,15 @@ class MapSystem {
         this.grid[CONFIG.MAP_ROWS - 3][midX - 1] = CONFIG.TILE_TYPES.STEEL; // 正面左
         this.grid[CONFIG.MAP_ROWS - 3][midX] = CONFIG.TILE_TYPES.STEEL;     // 正面中
         this.grid[CONFIG.MAP_ROWS - 3][midX + 1] = CONFIG.TILE_TYPES.STEEL; // 正面右
+
+        // 核心修复：确保所有出生点位置都是空的
+        const spawnPoints = [
+            ...CONFIG.SPAWN_POINTS.ENEMY,
+            ...CONFIG.SPAWN_POINTS.PLAYER
+        ];
+        spawnPoints.forEach(p => {
+            if (this.grid[p.y]) this.grid[p.y][p.x] = CONFIG.TILE_TYPES.EMPTY;
+        });
     }
 
     _addBlocks(row, col, w, h, type) {

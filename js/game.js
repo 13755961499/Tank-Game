@@ -232,6 +232,18 @@ class Game {
             this.map.grid[data.row][data.col] = CONFIG.TILE_TYPES.EMPTY;
         });
 
+        this.socket.on('gameStateUpdate', (state) => {
+            if (state === 'WAITING') {
+                this.state = 'WAITING';
+                this.showWaitingScreen(true);
+            } else if (state === 'PLAYING') {
+                this.state = 'PLAYING';
+                this.showWaitingScreen(false);
+            } else if (state === 'GAMEOVER') {
+                this.gameOver();
+            }
+        });
+
         this.socket.on('scoreUpdate', (score) => {
             this.score = score;
             this.updateHUD();
@@ -250,6 +262,7 @@ class Game {
     }
 
     gameOver() {
+        if (this.state === 'GAMEOVER') return; // 防止重复触发
         this.state = 'GAMEOVER';
         if (this.score > this.highScore) {
             this.highScore = this.score;
@@ -270,6 +283,29 @@ class Game {
         document.getElementById('hp-value').innerText = this.hp;
         document.getElementById('score-value').innerText = this.score;
         document.getElementById('high-score-value').innerText = this.highScore;
+    }
+
+    showWaitingScreen(show) {
+        let waitingEl = document.getElementById('waiting-overlay');
+        if (!waitingEl) {
+            waitingEl = document.createElement('div');
+            waitingEl.id = 'waiting-overlay';
+            waitingEl.className = 'overlay';
+            waitingEl.innerHTML = `
+                <div class="content">
+                    <h2>等待其他玩家加入...</h2>
+                    <p>联机模式至少需要 2 名玩家</p>
+                    <div class="loader"></div>
+                </div>
+            `;
+            document.querySelector('.game-container').appendChild(waitingEl);
+        }
+        
+        if (show) {
+            waitingEl.classList.remove('hidden');
+        } else {
+            waitingEl.classList.add('hidden');
+        }
     }
 
     gameLoop() {

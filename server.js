@@ -20,6 +20,7 @@ let enemyIdCounter = 0;
 let teamScore = 0; // 全局团队分数
 let powerups = {}; // 服务端管理的道具
 let powerupIdCounter = 0;
+let gameState = 'WAITING'; // WAITING, PLAYING, GAMEOVER
 
 // 初始化服务端地图数据 (用于 AI 碰撞检测)
 function initServerMap() {
@@ -64,6 +65,15 @@ function initServerMap() {
     mapData[17][midX-1] = 2;    // STEEL
     mapData[17][midX] = 2;      // STEEL
     mapData[17][midX+1] = 2;    // STEEL
+
+    // 核心修复：确保所有出生点位置都是空的 (0)
+    const clearSpawnPoints = [
+        { x: 1, y: 1 }, { x: 12, y: 1 }, { x: 24, y: 1 }, // 敌人出生点
+        { x: 8, y: 18 }, { x: 17, y: 18 }, { x: 1, y: 18 }, { x: 24, y: 18 } // 玩家出生点
+    ];
+    clearSpawnPoints.forEach(p => {
+        if (mapData[p.y]) mapData[p.y][p.x] = 0;
+    });
 }
 
 initServerMap();
@@ -136,27 +146,31 @@ function spawnEnemy() {
     if (Object.keys(enemies).length >= 6) return;
     const id = `ai_${enemyIdCounter++}`;
     
+    // 使用固定的安全出生点 (网格坐标转像素)
     const spawnPoints = [
         { x: 1 * 32, y: 1 * 32 },
         { x: 12 * 32, y: 1 * 32 },
         { x: 24 * 32, y: 1 * 32 }
     ];
     
-    // 寻找一个不碰撞的出生点
-    let point = null;
-    for (let p of spawnPoints.sort(() => Math.random() - 0.5)) {
+    // 寻找一个既没有墙也没有其他坦克的出生点
+    let bestPoint = null;
+    const shuffledPoints = spawnPoints.sort(() => Math.random() - 0.5);
+    
+    for (let p of shuffledPoints) {
         if (!checkCollision(p.x, p.y)) {
-            point = p;
+            bestPoint = p;
             break;
         }
     }
     
-    if (!point) return; // 如果出生点都被占了，等下次再生成
+    // 如果三个点都有人挡着，就暂时不生成，等待下一次循环
+    if (!bestPoint) return;
     
     enemies[id] = {
         id,
-        x: point.x,
-        y: point.y,
+        x: bestPoint.x,
+        y: bestPoint.y,
         direction: 1, // DOWN
         type: 'ai'
     };
@@ -166,6 +180,8 @@ function spawnEnemy() {
 // 服务端AI逻辑
 function updateAI() {
     if (Object.keys(players).length === 0) return;
+    // 只有在游戏进行中才更新 AI
+    if (gameState !== 'PLAYING') return;
 
     if (Object.keys(enemies).length < 6 && Math.random() < 0.1) {
         spawnEnemy();
@@ -256,10 +272,18 @@ io.on('connection', (socket) => {
         if (Object.keys(powerups).length > 0) {
             socket.emit('currentPowerups', powerups);
         }
+        // 发送当前游戏状态
+        socket.emit('gameStateUpdate', gameState);
 
-        // 如果这是第一个玩家，立即尝试生成一个 AI
-        if (Object.keys(players).length === 1 && Object.keys(enemies).length === 0) {
-            spawnEnemy();
+        // 检查人数是否足够开始游戏
+        if (gameState === 'WAITING' && Object.keys(players).length >= 2) {
+            gameState = 'PLAYING';
+            io.emit('gameStateUpdate', 'PLAYING');
+            console.log('[SERVER] 玩家人数足够，游戏开始！');
+            // 立即生成一个 AI
+            if (Object.keys(enemies).length === 0) {
+                spawnEnemy();
+            }
         }
     });
 
@@ -332,17 +356,27 @@ io.on('connection', (socket) => {
         enemyIdCounter = 0;
         powerups = {};
         powerupIdCounter = 0;
+        gameState = 'WAITING'; // 重置为等待状态
         initServerMap();
         io.emit('scoreUpdate', teamScore);
         io.emit('mapUpdate', mapData);
         io.emit('currentPowerups', powerups);
+        io.emit('gameStateUpdate', 'WAITING');
         console.log(`[SERVER] 玩家 ${socket.id} 请求重置游戏状态`);
     });
 
     // 处理玩家状态更新 (血量、分数等)
     socket.on('playerUpdate', (data) => {
         if (players[socket.id]) {
-            if (data.hp !== undefined) players[socket.id].hp = data.hp;
+            if (data.hp !== undefined) {
+                players[socket.id].hp = data.hp;
+                // 如果任一玩家血量降为 0，游戏结束
+                if (data.hp <= 0 && gameState === 'PLAYING') {
+                    gameState = 'GAMEOVER';
+                    io.emit('gameStateUpdate', 'GAMEOVER');
+                    console.log(`[SERVER] 玩家 ${socket.id} 阵亡，游戏结束`);
+                }
+            }
             if (data.score !== undefined) players[socket.id].score = data.score;
             socket.broadcast.emit('playerUpdate', players[socket.id]);
         }
@@ -387,8 +421,14 @@ io.on('connection', (socket) => {
             teamScore = 0;
             enemies = {};
             enemyIdCounter = 0;
+            gameState = 'WAITING';
             initServerMap(); // 恢复地图
             console.log('[SERVER] 所有玩家已离开，重置游戏状态');
+        } else if (Object.keys(players).length < 2 && gameState === 'PLAYING') {
+            // 如果人数不足 2 人且正在游戏中，回到等待状态
+            gameState = 'WAITING';
+            io.emit('gameStateUpdate', 'WAITING');
+            console.log('[SERVER] 玩家人数不足 2 人，回到等待状态');
         }
     });
 });
