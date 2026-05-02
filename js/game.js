@@ -62,7 +62,7 @@ class Game {
 
     start(multiplayer = false) {
         AudioManager.init();
-        const wasGameOver = this.state === 'GAMEOVER';
+        const wasGameOver = this.state === 'GAMEOVER'; // 在修改状态前捕获旧状态
         this.isMultiplayer = multiplayer;
         this.state = 'PLAYING';
         this.score = 0;
@@ -84,11 +84,16 @@ class Game {
         
         if (multiplayer) {
             this.initSocket();
-            // 如果是从游戏结束状态重新开始，通知服务器重置团队分数和地图
+            // 如果是从游戏结束状态重新开始，通知服务器重置
             if (wasGameOver && this.socket) {
-                this.socket.on('connect', () => {
+                // 确保在连接成功后发送重置指令
+                if (this.socket.connected) {
                     this.socket.emit('resetGame');
-                });
+                } else {
+                    this.socket.once('connect', () => {
+                        this.socket.emit('resetGame');
+                    });
+                }
             }
         }
 
@@ -148,6 +153,11 @@ class Game {
             console.log('[DEBUG] 收到新 AI 生成事件:', enemy);
             const e = new EnemyTank(enemy.x, enemy.y);
             e.id = enemy.id;
+            if (enemy.type === 'elite') {
+                e.hp = 5;
+                e.color = CONFIG.COLORS.ELITE;
+                e.isElite = true;
+            }
             this.enemies.push(e);
         });
 
@@ -185,8 +195,13 @@ class Game {
             }
         });
 
+        this.socket.on('mapUpdate', (data) => {
+            this.map.grid = JSON.parse(JSON.stringify(data));
+        });
+
         this.socket.on('enemyShoot', (data) => {
-            const b = new Bullet(data.x, data.y, data.direction, 'enemy');
+            const b = new Bullet(data.x, data.y, data.direction, data.type || 'enemy');
+            if (data.isElite) b.isElite = true; // 标记精英子弹
             this.bullets.push(b);
         });
 
@@ -294,7 +309,9 @@ class Game {
         document.getElementById('final-score').innerText = this.score;
         document.getElementById('high-score-over').innerText = this.highScore;
         AudioManager.playExplosion();
-        if (this.socket) this.socket.disconnect();
+        // 核心修复：联机模式下死亡不要立即断开连接，否则服务器可能会因为人数不足将状态切回 WAITING
+        // 从而导致另一名玩家看到的是“等待加入”而不是“游戏结束”
+        // if (this.socket) this.socket.disconnect();
     }
 
     hideOverlays() {
@@ -421,6 +438,13 @@ class Game {
             // 与地图碰撞
             const hitInfo = this._bulletMapCollision(bullet);
             if (hitInfo) {
+                // 如果是普通子弹打中铁墙，子弹消失但墙不坏
+                if (hitInfo.tileType === CONFIG.TILE_TYPES.STEEL && !bullet.isElite) {
+                    bullet.active = false;
+                    this.bullets.splice(i, 1);
+                    continue;
+                }
+                
                 bullet.active = false;
                 this.bullets.splice(i, 1);
                 if (hitInfo.type === 'game_over') this.gameOver();
@@ -451,9 +475,17 @@ class Game {
                         if (this.hp <= 0) this.gameOver();
                     } else if (tank instanceof EnemyTank) {
                         if (this.isMultiplayer) {
-                            this.socket.emit('enemyHit', { id: tank.id });
-                            // 立即标记为不活跃并移除，防止因网络延迟导致敌人“停在原地”
-                            tank.active = false;
+                            if (tank.isElite) {
+                                // 精英坦克需要打 5 下
+                                tank.hp--;
+                                if (tank.hp <= 0) {
+                                    this.socket.emit('enemyHit', { id: tank.id });
+                                    tank.active = false;
+                                }
+                            } else {
+                                this.socket.emit('enemyHit', { id: tank.id });
+                                tank.active = false;
+                            }
                         } else {
                             tank.active = false;
                             this.score += 100;
@@ -477,13 +509,20 @@ class Game {
     _bulletMapCollision(bullet) {
         const col = Math.floor(bullet.x / CONFIG.TILE_SIZE);
         const row = Math.floor(bullet.y / CONFIG.TILE_SIZE);
+        const tileType = (this.map.grid[row] && this.map.grid[row][col]) || 0;
         const hitType = this.map.hitTest(bullet);
         
-        if (hitType === 'hit_destructible' && this.isMultiplayer && this.socket) {
-            this.socket.emit('tileDestroyed', { row, col });
+        // 核心修复：无论是普通砖墙还是老家(BASE)，只要被击中，都要同步给服务端
+        if ((hitType === 'hit_destructible' || hitType === 'game_over') && this.isMultiplayer && this.socket) {
+            // 如果是铁墙，只有精英子弹能打掉
+            if (tileType === CONFIG.TILE_TYPES.STEEL && !bullet.isElite) {
+                // 不发送销毁请求
+            } else {
+                this.socket.emit('tileDestroyed', { row, col, bulletType: bullet.isElite ? 'elite' : 'normal' });
+            }
         }
         
-        return hitType ? { type: hitType, row, col } : null;
+        return hitType ? { type: hitType, row, col, tileType } : null;
     }
 
     _updatePowerups(dt) {

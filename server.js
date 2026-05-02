@@ -21,6 +21,7 @@ let teamScore = 0; // 全局团队分数
 let powerups = {}; // 服务端管理的道具
 let powerupIdCounter = 0;
 let gameState = 'WAITING'; // WAITING, PLAYING, GAMEOVER
+let eliteSpawnTimer = null; // 精英坦克生成定时器
 
 // 初始化服务端地图数据 (用于 AI 碰撞检测)
 function initServerMap() {
@@ -56,6 +57,11 @@ function initServerMap() {
     addBlocks(15, 3, 2, 4, 1);  // BRICK
     addBlocks(15, 17, 2, 4, 1); // BRICK
     addBlocks(8, 8, 10, 2, 4);  // WATER
+    
+    // 添加草地 (GRASS: 3)
+    addBlocks(4, 5, 3, 3, 3);
+    addBlocks(4, 18, 3, 3, 3);
+    addBlocks(14, 10, 6, 2, 3);
     
     // 老家位置
     const midX = 13;
@@ -142,9 +148,9 @@ function checkCollision(x, y, excludeId = null) {
 }
 
 // 封装生成 AI 的逻辑
-function spawnEnemy() {
-    if (Object.keys(enemies).length >= 6) return;
-    const id = `ai_${enemyIdCounter++}`;
+function spawnEnemy(type = 'ai') {
+    if (Object.keys(enemies).length >= 6 && type === 'ai') return;
+    const id = type === 'elite' ? `elite_${enemyIdCounter++}` : `ai_${enemyIdCounter++}`;
     
     // 使用固定的安全出生点 (网格坐标转像素)
     const spawnPoints = [
@@ -164,7 +170,6 @@ function spawnEnemy() {
         }
     }
     
-    // 如果三个点都有人挡着，就暂时不生成，等待下一次循环
     if (!bestPoint) return;
     
     enemies[id] = {
@@ -172,9 +177,21 @@ function spawnEnemy() {
         x: bestPoint.x,
         y: bestPoint.y,
         direction: 1, // DOWN
-        type: 'ai'
+        type: type,
+        hp: type === 'elite' ? 5 : 1
     };
     io.emit('enemySpawned', enemies[id]);
+}
+
+// 开始精英坦克循环
+function startEliteCycle() {
+    if (eliteSpawnTimer) clearInterval(eliteSpawnTimer);
+    eliteSpawnTimer = setInterval(() => {
+        if (gameState === 'PLAYING' && Object.keys(players).length >= 2) {
+            console.log('[SERVER] 生成精英坦克！');
+            spawnEnemy('elite');
+        }
+    }, 30000); // 30秒
 }
 
 // 服务端AI逻辑
@@ -223,7 +240,8 @@ function updateAI() {
                 x: bx,
                 y: by,
                 direction: enemy.direction,
-                type: 'enemy'
+                type: 'enemy',
+                isElite: enemy.type === 'elite' // 标记是否为精英子弹
             });
         }
     }
@@ -231,6 +249,20 @@ function updateAI() {
     if (Object.keys(enemies).length > 0) {
         io.emit('enemiesMoved', enemies);
     }
+}
+
+// 仅修复老家围墙
+function repairBaseWalls() {
+    if (!mapData) return;
+    const midX = 13;
+    // 恢复老家周围的砖墙和钢墙
+    mapData[18][midX-1] = 1;    // BRICK
+    mapData[18][midX+1] = 1;    // BRICK
+    mapData[17][midX-1] = 2;    // STEEL
+    mapData[17][midX] = 2;      // STEEL
+    mapData[17][midX+1] = 2;    // STEEL
+    // 确保老家本身是存在的
+    mapData[18][midX] = 9;      // BASE
 }
 
 // 提高更新频率：从 100ms 改为 50ms
@@ -280,6 +312,7 @@ io.on('connection', (socket) => {
             gameState = 'PLAYING';
             io.emit('gameStateUpdate', 'PLAYING');
             console.log('[SERVER] 玩家人数足够，游戏开始！');
+            startEliteCycle(); // 开启精英坦克循环
             // 立即生成一个 AI
             if (Object.keys(enemies).length === 0) {
                 spawnEnemy();
@@ -318,8 +351,8 @@ io.on('connection', (socket) => {
             io.emit('enemyDestroyed', data.id);
 
             // 联机模式下的道具生成
-            if (Math.random() < 0.2) { // 20% 概率掉落
-                const types = ['life', 'bomb', 'star', 'shovel'];
+            if (Math.random() < 0.25) { // 提高一点概率，因为加了修复道具
+                const types = ['life', 'bomb', 'star', 'shovel', 'repair'];
                 const type = types[Math.floor(Math.random() * types.length)];
                 const powerupId = `pw_${powerupIdCounter++}`;
                 powerups[powerupId] = {
@@ -342,8 +375,23 @@ io.on('connection', (socket) => {
 
     // 处理地图更新（墙体破坏）
     socket.on('tileDestroyed', (data) => {
-        // data: { row, col }
+        // data: { row, col, bulletType }
         if (mapData && mapData[data.row]) {
+            const tile = mapData[data.row][data.col];
+            // 普通子弹打不动铁墙 (2)，只有精英坦克子弹 (elite) 能打掉
+            if (tile === 2 && data.bulletType !== 'elite') {
+                return; 
+            }
+            
+            // 如果是老家被毁，触发游戏结束
+            if (tile === 9) {
+                if (gameState === 'PLAYING') {
+                    gameState = 'GAMEOVER';
+                    io.emit('gameStateUpdate', 'GAMEOVER');
+                    console.log(`[SERVER] 老家被毁，游戏结束`);
+                }
+            }
+
             mapData[data.row][data.col] = 0; // 同步服务端地图状态
         }
         socket.broadcast.emit('tileDestroyed', data);
@@ -356,13 +404,24 @@ io.on('connection', (socket) => {
         enemyIdCounter = 0;
         powerups = {};
         powerupIdCounter = 0;
-        gameState = 'WAITING'; // 重置为等待状态
+        if (eliteSpawnTimer) clearInterval(eliteSpawnTimer);
+        eliteSpawnTimer = null;
         initServerMap();
+        
+        // 核心修复：重置后立即检查人数，决定是 WAITING 还是 PLAYING
+        if (Object.keys(players).length >= 2) {
+            gameState = 'PLAYING';
+            console.log(`[SERVER] 玩家 ${socket.id} 请求重置，人数充足，游戏开始`);
+            startEliteCycle();
+        } else {
+            gameState = 'WAITING';
+            console.log(`[SERVER] 玩家 ${socket.id} 请求重置，人数不足，等待中`);
+        }
+        
         io.emit('scoreUpdate', teamScore);
         io.emit('mapUpdate', mapData);
         io.emit('currentPowerups', powerups);
-        io.emit('gameStateUpdate', 'WAITING');
-        console.log(`[SERVER] 玩家 ${socket.id} 请求重置游戏状态`);
+        io.emit('gameStateUpdate', gameState);
     });
 
     // 处理玩家状态更新 (血量、分数等)
@@ -416,6 +475,13 @@ io.on('connection', (socket) => {
                 setTimeout(() => {
                     io.emit('playerBuff', { type: 'star', active: false });
                 }, 5000);
+            }
+
+            // 4. 如果是修复，同步修复老家围墙
+            if (type === 'repair') {
+                repairBaseWalls(); // 仅修复老家围墙
+                io.emit('mapUpdate', mapData); // 广播给所有人
+                io.emit('scoreUpdate', teamScore); 
             }
         }
     });
