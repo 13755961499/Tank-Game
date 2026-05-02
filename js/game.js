@@ -64,23 +64,8 @@ class Game {
         AudioManager.init();
         const wasGameOver = this.state === 'GAMEOVER'; // 在修改状态前捕获旧状态
         this.isMultiplayer = multiplayer;
-        this.state = 'PLAYING';
-        this.score = 0;
-        this.hp = CONFIG.INITIAL_HP;
         
-        // 使用固定的安全出生点
-        const playerPoints = CONFIG.SPAWN_POINTS.PLAYER;
-        const spawnPoint = playerPoints[Math.floor(Math.random() * playerPoints.length)];
-        const startX = spawnPoint.x * CONFIG.TILE_SIZE;
-        const startY = spawnPoint.y * CONFIG.TILE_SIZE;
-        
-        this.player = new PlayerTank(startX, startY);
-        this.enemies = [];
-        this.remotePlayers = {};
-        this.bullets = [];
-        this.powerups = [];
-        this.explosions = [];
-        this.map.initDefaultMap();
+        this.resetLocalGameState();
         
         if (multiplayer) {
             this.initSocket();
@@ -103,6 +88,36 @@ class Game {
         if (!this.looping) {
             this.looping = true;
             this.gameLoop();
+        }
+    }
+
+    /**
+     * 重置本地游戏状态（不涉及 Socket 连接）
+     */
+    resetLocalGameState() {
+        this.state = 'PLAYING';
+        this.score = 0;
+        this.hp = CONFIG.INITIAL_HP;
+        
+        // 使用固定的安全出生点
+        const playerPoints = CONFIG.SPAWN_POINTS.PLAYER;
+        const spawnPoint = playerPoints[Math.floor(Math.random() * playerPoints.length)];
+        const startX = spawnPoint.x * CONFIG.TILE_SIZE;
+        const startY = spawnPoint.y * CONFIG.TILE_SIZE;
+        
+        this.player = new PlayerTank(startX, startY);
+        this.enemies = [];
+        // 核心修复：重新开始时不应清空远程玩家列表，因为队友并未离开
+        // this.remotePlayers = {}; 
+        this.bullets = [];
+        this.powerups = [];
+        this.explosions = [];
+        this.map.initDefaultMap();
+        
+        // 重置远程玩家的状态（如血量和存活状态）
+        for (let id in this.remotePlayers) {
+            this.remotePlayers[id].hp = CONFIG.INITIAL_HP;
+            this.remotePlayers[id].active = true;
         }
     }
 
@@ -144,19 +159,25 @@ class Game {
                 if (!this.enemies.find(e => e.id === id)) {
                     const e = new EnemyTank(enemy.x, enemy.y);
                     e.id = id;
+                    if (enemy.type === 'elite') {
+                        e.hp = 5;
+                        e.color = CONFIG.COLORS.ELITE;
+                        e.isElite = true;
+                    }
                     this.enemies.push(e);
                 }
             }
         });
 
         this.socket.on('enemySpawned', (enemy) => {
-            console.log('[DEBUG] 收到新 AI 生成事件:', enemy);
+            console.log(`[DEBUG] 收到新 AI 生成: ${enemy.id}, 类型: ${enemy.type}`);
             const e = new EnemyTank(enemy.x, enemy.y);
             e.id = enemy.id;
             if (enemy.type === 'elite') {
                 e.hp = 5;
                 e.color = CONFIG.COLORS.ELITE;
                 e.isElite = true;
+                console.log(`[DEBUG] 已将 ${enemy.id} 标记为精英坦克`);
             }
             this.enemies.push(e);
         });
@@ -252,8 +273,7 @@ class Game {
 
         this.socket.on('playerUpdate', (p) => {
             if (this.remotePlayers[p.id]) {
-                this.remotePlayers[p.id].hp = p.hp;
-                this.remotePlayers[p.id].score = p.score;
+                this.remotePlayers[p.id].updateState(p);
             }
         });
 
@@ -267,6 +287,12 @@ class Game {
                 this.state = 'WAITING';
                 this.showWaitingScreen(true);
             } else if (state === 'PLAYING') {
+                // 核心修复：如果从 GAMEOVER 切换到 PLAYING，全员重置本地状态
+                if (this.isMultiplayer && this.state === 'GAMEOVER') {
+                    console.log('[DEBUG] 检测到游戏重新开始，重置本地状态');
+                    this.resetLocalGameState();
+                    this.hideOverlays();
+                }
                 this.state = 'PLAYING';
                 this.showWaitingScreen(false);
             } else if (state === 'GAMEOVER') {
@@ -462,11 +488,22 @@ class Game {
                 if (tank instanceof EnemyTank && bullet.owner === 'enemy') continue;
                 
                 if (this._checkCollision(bullet.getRect(), tank.getRect())) {
+                    // 核心修复：如果坦克有护盾且被敌方子弹击中，子弹消失但坦克不受伤
+                    if (tank.isShielded && bullet.owner === 'enemy') {
+                        bullet.active = false;
+                        this.createExplosion(bullet.x, bullet.y, true);
+                        AudioManager.playHit();
+                        break;
+                    }
+
                     bullet.active = false;
                     this.createExplosion(tank.x + 16, tank.y + 16);
                     AudioManager.playExplosion();
 
                     if (tank === this.player) {
+                        // 再次确认护盾（双重保险）
+                        if (this.player.isShielded) break;
+                        
                         this.hp--;
                         this.updateHUD();
                         if (this.isMultiplayer && this.socket) {
@@ -548,18 +585,35 @@ class Game {
 
     applyPowerup(type) {
         // 联机模式下，大部分道具效果通过服务器广播同步
-        // 只有 LIFE 是个人私有的，不进行广播
+        // 只有 LIFE 和 SHIELD 是个人私有的 (虽然 SHIELD 状态需要广播给别人看)
         if (this.isMultiplayer) {
             if (type === CONFIG.POWERUP_TYPES.LIFE) {
                 this.hp++;
                 this.updateHUD();
                 this.socket.emit('playerUpdate', { hp: this.hp });
             }
+            if (type === CONFIG.POWERUP_TYPES.SHIELD) {
+                this.player.isShielded = true;
+                this.socket.emit('playerUpdate', { isShielded: true });
+                // 10秒后自动取消
+                setTimeout(() => {
+                    if (this.player) {
+                        this.player.isShielded = false;
+                        if (this.socket) this.socket.emit('playerUpdate', { isShielded: false });
+                    }
+                }, 10000);
+            }
             return;
         }
 
         switch(type) {
             case CONFIG.POWERUP_TYPES.LIFE: this.hp++; break;
+            case CONFIG.POWERUP_TYPES.SHIELD:
+                if (this.player) {
+                    this.player.isShielded = true;
+                    setTimeout(() => { if (this.player) this.player.isShielded = false; }, 10000);
+                }
+                break;
             case CONFIG.POWERUP_TYPES.BOMB: 
                 this.enemies.forEach(e => { this.createExplosion(e.x+16, e.y+16); this.score+=100; });
                 this.enemies = []; break;

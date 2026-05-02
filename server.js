@@ -149,7 +149,13 @@ function checkCollision(x, y, excludeId = null) {
 
 // 封装生成 AI 的逻辑
 function spawnEnemy(type = 'ai') {
-    if (Object.keys(enemies).length >= 6 && type === 'ai') return;
+    if (type === 'ai' && Object.keys(enemies).filter(id => !id.startsWith('elite')).length >= 6) return;
+    
+    // 核心限制：场上精英坦克最多存在 2 只
+    if (type === 'elite' && Object.keys(enemies).filter(id => id.startsWith('elite')).length >= 2) {
+        return;
+    }
+
     const id = type === 'elite' ? `elite_${enemyIdCounter++}` : `ai_${enemyIdCounter++}`;
     
     // 使用固定的安全出生点 (网格坐标转像素)
@@ -164,10 +170,17 @@ function spawnEnemy(type = 'ai') {
     const shuffledPoints = spawnPoints.sort(() => Math.random() - 0.5);
     
     for (let p of shuffledPoints) {
+        // 对于精英坦克，我们稍微放宽一点碰撞检测，或者如果失败了就强制选一个
         if (!checkCollision(p.x, p.y)) {
             bestPoint = p;
             break;
         }
+    }
+    
+    // 如果是精英坦克但没找到空位，强制选择一个出生点（防止开局刷不出来）
+    if (!bestPoint && type === 'elite') {
+        bestPoint = shuffledPoints[0];
+        console.log(`[SERVER] 精英坦克出生点拥挤，强制选择位置: ${bestPoint.x}, ${bestPoint.y}`);
     }
     
     if (!bestPoint) return;
@@ -186,9 +199,17 @@ function spawnEnemy(type = 'ai') {
 // 开始精英坦克循环
 function startEliteCycle() {
     if (eliteSpawnTimer) clearInterval(eliteSpawnTimer);
+    
+    console.log('[SERVER] 游戏开始，尝试立即生成首只精英坦克...');
+    // 核心要求：游戏开始立即刷新一只精英怪
+    // 增加一个延时，确保地图和状态已经完全同步
+    setTimeout(() => {
+        spawnEnemy('elite');
+    }, 500);
+
     eliteSpawnTimer = setInterval(() => {
         if (gameState === 'PLAYING' && Object.keys(players).length >= 2) {
-            console.log('[SERVER] 生成精英坦克！');
+            console.log('[SERVER] 30秒周期：尝试生成精英坦克');
             spawnEnemy('elite');
         }
     }, 30000); // 30秒
@@ -207,19 +228,45 @@ function updateAI() {
     for (let id in enemies) {
         const enemy = enemies[id];
         const speed = 4;
+        let moved = false;
+
+        // 尝试当前方向移动
         let nextX = enemy.x;
         let nextY = enemy.y;
-
         if (enemy.direction === 0) nextY -= speed;
         else if (enemy.direction === 1) nextY += speed;
         else if (enemy.direction === 2) nextX -= speed;
         else if (enemy.direction === 3) nextX += speed;
 
+        // 核心修复：增加脱困逻辑。如果移动受阻，尝试其他所有方向
         if (checkCollision(nextX, nextY, id)) {
-            enemy.direction = Math.floor(Math.random() * 4);
+            // 随机打乱方向顺序尝试
+            const dirs = [0, 1, 2, 3].sort(() => Math.random() - 0.5);
+            for (let d of dirs) {
+                let tx = enemy.x;
+                let ty = enemy.y;
+                if (d === 0) ty -= speed;
+                else if (d === 1) ty += speed;
+                else if (d === 2) tx -= speed;
+                else if (d === 3) tx += speed;
+
+                if (!checkCollision(tx, ty, id)) {
+                    enemy.x = tx;
+                    enemy.y = ty;
+                    enemy.direction = d;
+                    moved = true;
+                    break;
+                }
+            }
+            // 如果所有方向都走不动，保持原位并随机换个方向下次再试
+            if (!moved) {
+                enemy.direction = Math.floor(Math.random() * 4);
+            }
         } else {
             enemy.x = nextX;
             enemy.y = nextY;
+            moved = true;
+            // 随机改变方向的概率
             if (Math.random() < 0.05) {
                 enemy.direction = Math.floor(Math.random() * 4);
             }
@@ -341,18 +388,21 @@ io.on('connection', (socket) => {
     // 处理AI被击中
     socket.on('enemyHit', (data) => {
         if (enemies[data.id]) {
-            const enemyPos = { x: enemies[data.id].x, y: enemies[data.id].y };
+            const enemy = enemies[data.id];
+            const enemyPos = { x: enemy.x, y: enemy.y };
+            const isElite = enemy.type === 'elite';
             delete enemies[data.id];
             
             // 增加团队分数并同步给所有玩家
-            teamScore += 100;
+            teamScore += isElite ? 500 : 100; // 精英怪给更多分
             io.emit('scoreUpdate', teamScore);
             
             io.emit('enemyDestroyed', data.id);
 
-            // 联机模式下的道具生成
-            if (Math.random() < 0.25) { // 提高一点概率，因为加了修复道具
-                const types = ['life', 'bomb', 'star', 'shovel', 'repair'];
+            // 道具生成逻辑
+            // 核心修复：精英怪 (elite) 100% 掉落道具，普通怪保持 25% 概率
+            if (isElite || Math.random() < 0.25) {
+                const types = ['life', 'bomb', 'star', 'shovel', 'repair', 'shield'];
                 const type = types[Math.floor(Math.random() * types.length)];
                 const powerupId = `pw_${powerupIdCounter++}`;
                 powerups[powerupId] = {
@@ -421,6 +471,7 @@ io.on('connection', (socket) => {
         io.emit('scoreUpdate', teamScore);
         io.emit('mapUpdate', mapData);
         io.emit('currentPowerups', powerups);
+        io.emit('currentPlayers', players); // 核心修复：重置时同步现有玩家列表，防止队友消失
         io.emit('gameStateUpdate', gameState);
     });
 
@@ -452,7 +503,8 @@ io.on('connection', (socket) => {
             // 1. 如果是炸弹，同步全屏爆炸
             if (type === 'bomb') {
                 for (let eid in enemies) {
-                    teamScore += 100;
+                    const enemy = enemies[eid];
+                    teamScore += (enemy.type === 'elite' ? 500 : 100);
                     delete enemies[eid];
                 }
                 io.emit('scoreUpdate', teamScore);

@@ -10,6 +10,8 @@ class Tank {
         this.speed = 0;
         this.hp = CONFIG.TANK_HP;
         this.active = true;
+        this.isElite = false; // 显式初始化精英怪标识
+        this.isShielded = false; // 护盾状态
         this.lastShotTime = 0;
         this.shootInterval = 500; // 射击冷却 (ms)
     }
@@ -25,7 +27,12 @@ class Tank {
 
     draw(ctx) {
         if (!this.active) return;
-        SpriteRenderer.drawTank(ctx, this.x, this.y, this.direction, this.color, this instanceof PlayerTank);
+        SpriteRenderer.drawTank(ctx, this.x, this.y, this.direction, this.color, this instanceof PlayerTank, this.isElite);
+        
+        // 绘制护盾光圈
+        if (this.isShielded) {
+            SpriteRenderer.drawShield(ctx, this.x, this.y);
+        }
     }
 
     shoot() {
@@ -128,7 +135,13 @@ class RemoteTank extends Tank {
         this.x = data.x;
         this.y = data.y;
         this.direction = data.direction;
-        this.hp = data.hp;
+        if (data.hp !== undefined) {
+            this.hp = data.hp;
+            this.active = this.hp > 0;
+        }
+        if (data.isShielded !== undefined) {
+            this.isShielded = data.isShielded;
+        }
     }
 }
 

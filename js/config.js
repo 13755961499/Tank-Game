@@ -24,7 +24,8 @@ const CONFIG = {
         BOMB: 'bomb',           // 全屏敌人爆炸
         STAR: 'star',           // 提升射击速度 (临时)
         SHOVEL: 'shovel',       // 临时加固老家 (暂定逻辑)
-        REPAIR: 'repair'        // 修复老家围墙
+        REPAIR: 'repair',       // 修复老家围墙
+        SHIELD: 'shield'        // 护盾无敌
     },
     POWERUP_CHANCE: 0.2,        // 击败敌人掉落道具的概率
 
@@ -37,7 +38,7 @@ const CONFIG = {
         WATER: '#3498db',
         PLAYER: '#f1c40f',
         ENEMY: '#e74c3c',
-        ELITE: '#9b59b6',       // 精英坦克紫色
+        ELITE: '#0000FF',       // 精英坦克蓝色
         BULLET: '#ffffff',
         BASE: '#f1c40f',
         POWERUP: '#9b59b6'      // 道具紫色

@@ -2,7 +2,7 @@
  * 绘图渲染辅助
  */
 const SpriteRenderer = {
-    drawTank(ctx, x, y, direction, color, isPlayer) {
+    drawTank(ctx, x, y, direction, color, isPlayer, isElite = false) {
         ctx.save();
         ctx.translate(x + CONFIG.TILE_SIZE / 2, y + CONFIG.TILE_SIZE / 2);
         
@@ -16,22 +16,69 @@ const SpriteRenderer = {
         const s = CONFIG.TILE_SIZE;
         const p = 4;
 
-        // 履带
+        // 核心优化：如果是精英怪，增加蓝色外发光效果
+        if (isElite) {
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = '#00BFFF'; // 深天蓝发光
+            ctx.strokeStyle = '#FFFFFF';
+            ctx.lineWidth = 2;
+        }
+
+        // 履带 (精英怪和普通怪颜色保持一致，均为 #333)
         ctx.fillStyle = '#333';
-        ctx.fillRect(-s/2 + p, -s/2 + p, 8, s - p*2);
-        ctx.fillRect(s/2 - p - 8, -s/2 + p, 8, s - p*2);
+        const trackWidth = isElite ? 10 : 8;
+        ctx.fillRect(-s/2 + p, -s/2 + p, trackWidth, s - p*2);
+        ctx.fillRect(s/2 - p - trackWidth, -s/2 + p, trackWidth, s - p*2);
 
         // 车身
-        ctx.fillStyle = color;
+        // 核心修复：强制精英怪车身为蓝色，防止颜色同步或初始化问题导致显示为红色
+        ctx.fillStyle = isElite ? '#0000FF' : color; 
         ctx.fillRect(-s/2 + p + 6, -s/2 + p + 4, s - (p+6)*2, s - (p+4)*2);
+        
+        // 精英怪的装饰：银色装甲片
+        if (isElite) {
+            ctx.fillStyle = '#bdc3c7';
+            ctx.fillRect(-s/2 + p + 8, -s/2 + p + 6, 4, 4);
+            ctx.fillRect(s/2 - p - 12, -s/2 + p + 6, 4, 4);
+            ctx.fillRect(-s/2 + p + 8, s/2 - p - 10, 4, 4);
+            ctx.fillRect(s/2 - p - 12, s/2 - p - 10, 4, 4);
+        }
 
         // 炮塔
-        ctx.fillStyle = isPlayer ? '#d4ac0d' : '#c0392b';
-        ctx.fillRect(-6, -6, 12, 12);
+        // 精英怪炮塔主体蓝色，中心亮色
+        ctx.fillStyle = isPlayer ? '#d4ac0d' : (isElite ? '#1a237e' : '#c0392b');
+        if (isElite) {
+            // 精英怪炮塔呈菱形，更显科幻
+            ctx.beginPath();
+            ctx.moveTo(0, -12);
+            ctx.lineTo(12, 0);
+            ctx.lineTo(0, 12);
+            ctx.lineTo(-12, 0);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = '#00BFFF';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            // 炮塔中心的能量核心
+            ctx.fillStyle = '#00BFFF';
+            ctx.beginPath();
+            ctx.arc(0, 0, 4, 0, Math.PI * 2);
+            ctx.fill();
+        } else {
+            ctx.fillRect(-6, -6, 12, 12);
+        }
 
         // 炮管
-        ctx.fillStyle = '#95a5a6';
-        ctx.fillRect(-2, -s/2 + 2, 4, s/2);
+        ctx.fillStyle = isElite ? '#00BFFF' : '#95a5a6';
+        if (isElite) {
+            // 精英怪：加粗的电磁炮管感
+            ctx.fillRect(-4, -s/2 - 2, 8, s/2 + 2);
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(-2, -s/2, 4, s/2 - 4);
+        } else {
+            ctx.fillRect(-2, -s/2 + 2, 4, s/2);
+        }
 
         ctx.restore();
     },
@@ -140,9 +187,48 @@ const SpriteRenderer = {
             case CONFIG.POWERUP_TYPES.BOMB: icon = '💣'; break;
             case CONFIG.POWERUP_TYPES.STAR: icon = '⭐'; break;
             case CONFIG.POWERUP_TYPES.SHOVEL: icon = '🛡'; break;
+            case CONFIG.POWERUP_TYPES.SHIELD: icon = '💎'; break;
         }
         ctx.fillText(icon, x + s/2, y + s/2);
         
+        ctx.restore();
+    },
+
+    /**
+     * 绘制护盾光圈
+     */
+    drawShield(ctx, x, y) {
+        const s = CONFIG.TILE_SIZE;
+        const centerX = x + s / 2;
+        const centerY = y + s / 2;
+        const radius = s / 2 + 5;
+
+        ctx.save();
+        
+        // 创建呼吸效果
+        const time = Date.now() / 200;
+        const pulse = Math.sin(time) * 3;
+        
+        // 外圈光晕
+        const grad = ctx.createRadialGradient(centerX, centerY, radius - 5, centerX, centerY, radius + pulse);
+        grad.addColorStop(0, 'rgba(0, 191, 255, 0)');
+        grad.addColorStop(0.5, 'rgba(0, 191, 255, 0.3)');
+        grad.addColorStop(1, 'rgba(0, 191, 255, 0.6)');
+        
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius + pulse, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 细边线
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]); // 虚线效果
+        ctx.lineDashOffset = -time * 10; // 旋转动画
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+        ctx.stroke();
+
         ctx.restore();
     }
 };
