@@ -408,13 +408,30 @@ io.on('connection', (socket) => {
                     io.emit('baseReinforce', false);
                 }, 10000);
             }
+
+            // 3. 如果是星星，同步全队火力全开
+            if (type === 'star') {
+                io.emit('playerBuff', { type: 'star', active: true });
+                // 5秒后自动取消
+                setTimeout(() => {
+                    io.emit('playerBuff', { type: 'star', active: false });
+                }, 5000);
+            }
         }
     });
 
-    // 兼容旧的 playerHit 事件
+    // 处理玩家受伤/死亡
     socket.on('playerHit', (data) => {
         if (players[socket.id]) {
             players[socket.id].hp = data.hp;
+            
+            // 核心修复：playerHit 也要检查是否导致游戏结束
+            if (data.hp <= 0 && gameState === 'PLAYING') {
+                gameState = 'GAMEOVER';
+                io.emit('gameStateUpdate', 'GAMEOVER');
+                console.log(`[SERVER] 玩家 ${socket.id} 通过 playerHit 阵亡，游戏结束`);
+            }
+            
             socket.broadcast.emit('playerUpdate', players[socket.id]);
         }
     });

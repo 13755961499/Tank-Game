@@ -222,6 +222,15 @@ class Game {
             this.map.reinforceBase(active);
         });
 
+        this.socket.on('playerBuff', (data) => {
+            console.log(`[DEBUG] 收到全队增益同步: ${data.type} = ${data.active}`);
+            if (data.type === 'star') {
+                if (this.player) {
+                    this.player.shootInterval = data.active ? 200 : 500;
+                }
+            }
+        });
+
         this.socket.on('playerLeft', (id) => {
             delete this.remotePlayers[id];
         });
@@ -238,6 +247,7 @@ class Game {
         });
 
         this.socket.on('gameStateUpdate', (state) => {
+            console.log(`[DEBUG] 收到游戏状态更新: ${state}`);
             if (state === 'WAITING') {
                 this.state = 'WAITING';
                 this.showWaitingScreen(true);
@@ -251,7 +261,8 @@ class Game {
                     if (this.player) this.player.active = false;
                     this.updateHUD();
                 }
-                this.gameOver();
+                // 确保触发 UI 弹出
+                this.gameOver(true); 
             }
         });
 
@@ -272,8 +283,8 @@ class Game {
         }
     }
 
-    gameOver() {
-        if (this.state === 'GAMEOVER') return; // 防止重复触发
+    gameOver(force = false) {
+        if (this.state === 'GAMEOVER' && !force) return; 
         this.state = 'GAMEOVER';
         if (this.score > this.highScore) {
             this.highScore = this.score;
@@ -497,6 +508,17 @@ class Game {
     }
 
     applyPowerup(type) {
+        // 联机模式下，大部分道具效果通过服务器广播同步
+        // 只有 LIFE 是个人私有的，不进行广播
+        if (this.isMultiplayer) {
+            if (type === CONFIG.POWERUP_TYPES.LIFE) {
+                this.hp++;
+                this.updateHUD();
+                this.socket.emit('playerUpdate', { hp: this.hp });
+            }
+            return;
+        }
+
         switch(type) {
             case CONFIG.POWERUP_TYPES.LIFE: this.hp++; break;
             case CONFIG.POWERUP_TYPES.BOMB: 
