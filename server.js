@@ -18,6 +18,8 @@ let enemies = {}; // 服务端管理的AI敌人
 let mapData = null;
 let enemyIdCounter = 0;
 let teamScore = 0; // 全局团队分数
+let powerups = {}; // 服务端管理的道具
+let powerupIdCounter = 0;
 
 // 初始化服务端地图数据 (用于 AI 碰撞检测)
 function initServerMap() {
@@ -69,7 +71,13 @@ initServerMap();
 // 服务端碰撞检测
 function checkCollision(x, y, excludeId = null) {
     const size = 32;
-    const padding = 4; // 碰撞边距
+    const padding = 2; // 减小边距，提高碰撞检测的严密性
+    
+    // 边界检查：防止走出地图
+    if (x < 0 || x > 26 * 32 - size || y < 0 || y > 20 * 32 - size) {
+        return true;
+    }
+
     const rect = {
         left: x + padding,
         right: x + size - padding,
@@ -77,18 +85,22 @@ function checkCollision(x, y, excludeId = null) {
         bottom: y + size - padding
     };
 
-    // 1. 地图碰撞
-    const startCol = Math.floor(rect.left / size);
-    const endCol = Math.floor(rect.right / size);
-    const startRow = Math.floor(rect.top / size);
-    const endRow = Math.floor(rect.bottom / size);
+    // 1. 地图碰撞 (精确检测四个角和中点)
+    const checkPoints = [
+        { x: rect.left, y: rect.top },
+        { x: rect.right, y: rect.top },
+        { x: rect.left, y: rect.bottom },
+        { x: rect.right, y: rect.bottom },
+        { x: (rect.left + rect.right) / 2, y: (rect.top + rect.bottom) / 2 }
+    ];
 
-    for (let r = startRow; r <= endRow; r++) {
-        for (let c = startCol; c <= endCol; c++) {
-            if (mapData[r] && mapData[r][c]) {
-                const type = mapData[r][c];
-                if (type === 1 || type === 2 || type === 4 || type === 9) return true;
-            }
+    for (let pt of checkPoints) {
+        const c = Math.floor(pt.x / size);
+        const r = Math.floor(pt.y / size);
+        if (mapData[r] && mapData[r][c]) {
+            const type = mapData[r][c];
+            // 1: BRICK, 2: STEEL, 4: WATER, 9: BASE
+            if (type === 1 || type === 2 || type === 4 || type === 9) return true;
         }
     }
 
@@ -240,6 +252,10 @@ io.on('connection', (socket) => {
         socket.emit('currentPlayers', players);
         // 发送当前团队分数给新加入的玩家
         socket.emit('scoreUpdate', teamScore);
+        // 发送当前存在的道具给新玩家
+        if (Object.keys(powerups).length > 0) {
+            socket.emit('currentPowerups', powerups);
+        }
 
         // 如果这是第一个玩家，立即尝试生成一个 AI
         if (Object.keys(players).length === 1 && Object.keys(enemies).length === 0) {
@@ -268,6 +284,7 @@ io.on('connection', (socket) => {
     // 处理AI被击中
     socket.on('enemyHit', (data) => {
         if (enemies[data.id]) {
+            const enemyPos = { x: enemies[data.id].x, y: enemies[data.id].y };
             delete enemies[data.id];
             
             // 增加团队分数并同步给所有玩家
@@ -275,6 +292,20 @@ io.on('connection', (socket) => {
             io.emit('scoreUpdate', teamScore);
             
             io.emit('enemyDestroyed', data.id);
+
+            // 联机模式下的道具生成
+            if (Math.random() < 0.2) { // 20% 概率掉落
+                const types = ['life', 'bomb', 'star', 'shovel'];
+                const type = types[Math.floor(Math.random() * types.length)];
+                const powerupId = `pw_${powerupIdCounter++}`;
+                powerups[powerupId] = {
+                    id: powerupId,
+                    x: enemyPos.x,
+                    y: enemyPos.y,
+                    type: type
+                };
+                io.emit('powerupSpawned', powerups[powerupId]);
+            }
             
             // 3秒后自动补充一个敌人
             setTimeout(() => {
@@ -299,9 +330,12 @@ io.on('connection', (socket) => {
         teamScore = 0;
         enemies = {};
         enemyIdCounter = 0;
+        powerups = {};
+        powerupIdCounter = 0;
         initServerMap();
         io.emit('scoreUpdate', teamScore);
         io.emit('mapUpdate', mapData);
+        io.emit('currentPowerups', powerups);
         console.log(`[SERVER] 玩家 ${socket.id} 请求重置游戏状态`);
     });
 
@@ -311,6 +345,26 @@ io.on('connection', (socket) => {
             if (data.hp !== undefined) players[socket.id].hp = data.hp;
             if (data.score !== undefined) players[socket.id].score = data.score;
             socket.broadcast.emit('playerUpdate', players[socket.id]);
+        }
+    });
+
+    // 处理道具拾取
+    socket.on('powerupPicked', (id) => {
+        if (powerups[id]) {
+            const type = powerups[id].type;
+            delete powerups[id];
+            // 广播道具消失，并告知是谁拾取的（可选，这里主要同步消失）
+            io.emit('powerupDestroyed', id);
+            
+            // 如果是炸弹，同步全屏爆炸
+            if (type === 'bomb') {
+                for (let eid in enemies) {
+                    teamScore += 100;
+                    delete enemies[eid];
+                }
+                io.emit('scoreUpdate', teamScore);
+                io.emit('allEnemiesDestroyed');
+            }
         }
     });
 

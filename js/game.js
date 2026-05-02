@@ -62,6 +62,7 @@ class Game {
 
     start(multiplayer = false) {
         AudioManager.init();
+        const wasGameOver = this.state === 'GAMEOVER';
         this.isMultiplayer = multiplayer;
         this.state = 'PLAYING';
         this.score = 0;
@@ -82,7 +83,6 @@ class Game {
         this.map.initDefaultMap();
         
         if (multiplayer) {
-            const wasGameOver = this.state === 'GAMEOVER';
             this.initSocket();
             // 如果是从游戏结束状态重新开始，通知服务器重置团队分数和地图
             if (wasGameOver && this.socket) {
@@ -190,6 +190,33 @@ class Game {
             this.bullets.push(b);
         });
 
+        this.socket.on('currentPowerups', (powerupsData) => {
+            this.powerups = [];
+            for (let id in powerupsData) {
+                const p = powerupsData[id];
+                const newP = new Powerup(p.x, p.y, p.type);
+                newP.id = id;
+                this.powerups.push(newP);
+            }
+        });
+
+        this.socket.on('powerupSpawned', (p) => {
+            const newP = new Powerup(p.x, p.y, p.type);
+            newP.id = p.id;
+            this.powerups.push(newP);
+            AudioManager.playPowerupSpawn(); // 假设有这个音效
+        });
+
+        this.socket.on('powerupDestroyed', (id) => {
+            this.powerups = this.powerups.filter(p => p.id !== id);
+        });
+
+        this.socket.on('allEnemiesDestroyed', () => {
+            this.enemies.forEach(e => this.createExplosion(e.x + 16, e.y + 16));
+            this.enemies = [];
+            AudioManager.playExplosion();
+        });
+
         this.socket.on('playerLeft', (id) => {
             delete this.remotePlayers[id];
         });
@@ -295,10 +322,8 @@ class Game {
         // 4. 更新子弹逻辑
         this._updateBullets();
 
-        // 5. 更新道具拾取 (单机模式)
-        if (!this.isMultiplayer) {
-            this._updatePowerups(dt);
-        }
+        // 5. 更新道具拾取
+        this._updatePowerups(dt);
 
         // 6. 清理特效
         this.explosions.forEach((exp, index) => {
@@ -369,7 +394,8 @@ class Game {
                     } else if (tank instanceof EnemyTank) {
                         if (this.isMultiplayer) {
                             this.socket.emit('enemyHit', { id: tank.id });
-                            // 联机模式下不再由本地计算分数，而是等待服务器广播 scoreUpdate
+                            // 立即标记为不活跃并移除，防止因网络延迟导致敌人“停在原地”
+                            tank.active = false;
                         } else {
                             tank.active = false;
                             this.score += 100;
@@ -412,10 +438,15 @@ class Game {
             }
             if (this.player && this.player.active && this._checkCollision(this.player.getRect(), p.getRect())) {
                 this.applyPowerup(p.type);
+                if (this.isMultiplayer && this.socket) {
+                    this.socket.emit('powerupPicked', p.id);
+                }
                 this.powerups.splice(i, 1);
             }
         }
-        this.enemies = this.enemies.filter(e => e.active);
+        if (!this.isMultiplayer) {
+            this.enemies = this.enemies.filter(e => e.active);
+        }
     }
 
     applyPowerup(type) {
