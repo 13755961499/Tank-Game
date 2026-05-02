@@ -387,10 +387,10 @@ io.on('connection', (socket) => {
         if (powerups[id]) {
             const type = powerups[id].type;
             delete powerups[id];
-            // 广播道具消失，并告知是谁拾取的（可选，这里主要同步消失）
+            // 广播道具消失
             io.emit('powerupDestroyed', id);
             
-            // 如果是炸弹，同步全屏爆炸
+            // 1. 如果是炸弹，同步全屏爆炸
             if (type === 'bomb') {
                 for (let eid in enemies) {
                     teamScore += 100;
@@ -398,6 +398,15 @@ io.on('connection', (socket) => {
                 }
                 io.emit('scoreUpdate', teamScore);
                 io.emit('allEnemiesDestroyed');
+            }
+            
+            // 2. 如果是铲子，同步基地加固
+            if (type === 'shovel') {
+                io.emit('baseReinforce', true);
+                // 10秒后自动取消加固
+                setTimeout(() => {
+                    io.emit('baseReinforce', false);
+                }, 10000);
             }
         }
     });

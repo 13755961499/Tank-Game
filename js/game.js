@@ -217,6 +217,11 @@ class Game {
             AudioManager.playExplosion();
         });
 
+        this.socket.on('baseReinforce', (active) => {
+            console.log(`[DEBUG] 收到基地加固同步: ${active}`);
+            this.map.reinforceBase(active);
+        });
+
         this.socket.on('playerLeft', (id) => {
             delete this.remotePlayers[id];
         });
@@ -240,6 +245,12 @@ class Game {
                 this.state = 'PLAYING';
                 this.showWaitingScreen(false);
             } else if (state === 'GAMEOVER') {
+                // 如果是联机模式，收到 GAMEOVER 时强制将本地血量设为 0
+                if (this.isMultiplayer) {
+                    this.hp = 0;
+                    if (this.player) this.player.active = false;
+                    this.updateHUD();
+                }
                 this.gameOver();
             }
         });
