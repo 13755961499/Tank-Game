@@ -67,7 +67,7 @@ function initServerMap() {
 initServerMap();
 
 // 服务端碰撞检测
-function checkCollision(x, y) {
+function checkCollision(x, y, excludeId = null) {
     const size = 32;
     const padding = 4; // 碰撞边距
     const rect = {
@@ -77,6 +77,7 @@ function checkCollision(x, y) {
         bottom: y + size - padding
     };
 
+    // 1. 地图碰撞
     const startCol = Math.floor(rect.left / size);
     const endCol = Math.floor(rect.right / size);
     const startRow = Math.floor(rect.top / size);
@@ -86,13 +87,35 @@ function checkCollision(x, y) {
         for (let c = startCol; c <= endCol; c++) {
             if (mapData[r] && mapData[r][c]) {
                 const type = mapData[r][c];
-                // 1: BRICK, 2: STEEL, 4: WATER, 9: BASE
-                if (type === 1 || type === 2 || type === 4 || type === 9) {
-                    return true;
-                }
+                if (type === 1 || type === 2 || type === 4 || type === 9) return true;
             }
         }
     }
+
+    // 2. 与其他玩家碰撞
+    for (let id in players) {
+        if (id === excludeId) continue;
+        const p = players[id];
+        if (rect.left < p.x + size - padding &&
+            rect.right > p.x + padding &&
+            rect.top < p.y + size - padding &&
+            rect.bottom > p.y + padding) {
+            return true;
+        }
+    }
+
+    // 3. 与其他 AI 碰撞
+    for (let id in enemies) {
+        if (id === excludeId) continue;
+        const e = enemies[id];
+        if (rect.left < e.x + size - padding &&
+            rect.right > e.x + padding &&
+            rect.top < e.y + size - padding &&
+            rect.bottom > e.y + padding) {
+            return true;
+        }
+    }
+
     return false;
 }
 
@@ -101,13 +124,22 @@ function spawnEnemy() {
     if (Object.keys(enemies).length >= 6) return;
     const id = `ai_${enemyIdCounter++}`;
     
-    // 使用固定的安全出生点
     const spawnPoints = [
         { x: 1 * 32, y: 1 * 32 },
         { x: 12 * 32, y: 1 * 32 },
         { x: 24 * 32, y: 1 * 32 }
     ];
-    const point = spawnPoints[Math.floor(Math.random() * spawnPoints.length)];
+    
+    // 寻找一个不碰撞的出生点
+    let point = null;
+    for (let p of spawnPoints.sort(() => Math.random() - 0.5)) {
+        if (!checkCollision(p.x, p.y)) {
+            point = p;
+            break;
+        }
+    }
+    
+    if (!point) return; // 如果出生点都被占了，等下次再生成
     
     enemies[id] = {
         id,
@@ -116,25 +148,19 @@ function spawnEnemy() {
         direction: 1, // DOWN
         type: 'ai'
     };
-    console.log(`[SERVER] 生成 AI 敌人: ${id} at (${point.x}, ${point.y})`);
     io.emit('enemySpawned', enemies[id]);
 }
 
 // 服务端AI逻辑
 function updateAI() {
-    // 如果没有玩家在线，不更新 AI 以节省资源
     if (Object.keys(players).length === 0) return;
 
-    // 1. 尝试生成敌人
     if (Object.keys(enemies).length < 6 && Math.random() < 0.1) {
         spawnEnemy();
     }
 
-    // 2. 简单的AI移动逻辑
     for (let id in enemies) {
         const enemy = enemies[id];
-        
-        // 提高移动速度：每次更新移动 4 像素
         const speed = 4;
         let nextX = enemy.x;
         let nextY = enemy.y;
@@ -144,16 +170,11 @@ function updateAI() {
         else if (enemy.direction === 2) nextX -= speed;
         else if (enemy.direction === 3) nextX += speed;
 
-        // 碰撞检测与卡住处理
-        if (checkCollision(nextX, nextY)) {
-            // 如果撞墙了，立即随机换个方向，下次更新再走
+        if (checkCollision(nextX, nextY, id)) {
             enemy.direction = Math.floor(Math.random() * 4);
         } else {
-            // 没撞墙才更新位置
             enemy.x = nextX;
             enemy.y = nextY;
-            
-            // 正常行驶中也有小概率随机换向，增加灵活性
             if (Math.random() < 0.05) {
                 enemy.direction = Math.floor(Math.random() * 4);
             }
