@@ -71,7 +71,15 @@ class Tank {
         // 碰撞检测：其他坦克
         for (let tank of otherTanks) {
             if (tank === this || !tank.active) continue;
-            if (this._checkRectCollision(rect, tank.getRect())) {
+            const otherRect = tank.getRect();
+            if (this._checkRectCollision(rect, otherRect)) {
+                // 如果当前位置已经和对方重叠了，允许移动（为了让卡住的坦克能走出来）
+                const currentRect = { x: this.x + 2, y: this.y + 2, width: CONFIG.TILE_SIZE - 4, height: CONFIG.TILE_SIZE - 4 };
+                if (this._checkRectCollision(currentRect, otherRect)) {
+                    // 如果移动后重叠面积变小了，或者不再重叠，就允许移动
+                    // 这里简化处理：如果是为了脱困，允许移动
+                    continue; 
+                }
                 return false;
             }
         }

@@ -294,6 +294,17 @@ io.on('connection', (socket) => {
         socket.broadcast.emit('tileDestroyed', data);
     });
 
+    // 显式重置游戏状态（用于重新开始）
+    socket.on('resetGame', () => {
+        teamScore = 0;
+        enemies = {};
+        enemyIdCounter = 0;
+        initServerMap();
+        io.emit('scoreUpdate', teamScore);
+        io.emit('mapUpdate', mapData);
+        console.log(`[SERVER] 玩家 ${socket.id} 请求重置游戏状态`);
+    });
+
     // 处理玩家状态更新 (血量、分数等)
     socket.on('playerUpdate', (data) => {
         if (players[socket.id]) {
@@ -316,6 +327,15 @@ io.on('connection', (socket) => {
         console.log('玩家断开:', socket.id);
         delete players[socket.id];
         io.emit('playerLeft', socket.id);
+
+        // 如果所有玩家都断开了，重置团队分数和 AI，以便下次游戏从零开始
+        if (Object.keys(players).length === 0) {
+            teamScore = 0;
+            enemies = {};
+            enemyIdCounter = 0;
+            initServerMap(); // 恢复地图
+            console.log('[SERVER] 所有玩家已离开，重置游戏状态');
+        }
     });
 });
 

@@ -82,7 +82,14 @@ class Game {
         this.map.initDefaultMap();
         
         if (multiplayer) {
+            const wasGameOver = this.state === 'GAMEOVER';
             this.initSocket();
+            // 如果是从游戏结束状态重新开始，通知服务器重置团队分数和地图
+            if (wasGameOver && this.socket) {
+                this.socket.on('connect', () => {
+                    this.socket.emit('resetGame');
+                });
+            }
         }
 
         this.hideOverlays();
