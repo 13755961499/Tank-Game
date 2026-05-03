@@ -21,6 +21,8 @@ let teamScore = 0; // 全局团队分数
 let bossSpawned = false; // BOSS 是否已生成
 let powerups = {}; // 服务端管理的道具
 let powerupIdCounter = 0;
+let powerupTimeouts = {};
+const POWERUP_LIFETIME_MS = 10000;
 let gameState = 'WAITING'; // WAITING, PLAYING, GAMEOVER
 let eliteSpawnTimer = null; // 精英坦克生成定时器
 let hasSpawnedInitialLasers = false; // 记录是否已经发放过开局激光
@@ -85,6 +87,23 @@ function initServerMap() {
 }
 
 initServerMap();
+
+function schedulePowerupExpiry(powerupId) {
+    if (powerupTimeouts[powerupId]) {
+        clearTimeout(powerupTimeouts[powerupId]);
+        delete powerupTimeouts[powerupId];
+    }
+    powerupTimeouts[powerupId] = setTimeout(() => {
+        if (powerups[powerupId]) {
+            delete powerups[powerupId];
+            io.emit('powerupDestroyed', powerupId);
+        }
+        if (powerupTimeouts[powerupId]) {
+            clearTimeout(powerupTimeouts[powerupId]);
+            delete powerupTimeouts[powerupId];
+        }
+    }, POWERUP_LIFETIME_MS);
+}
 
 // 服务端碰撞检测
 function checkCollision(x, y, excludeId = null) {
@@ -197,7 +216,7 @@ function spawnEnemy(type = 'ai') {
         y: bestPoint.y,
         direction: 1, // DOWN
         type: type,
-        hp: type === 'boss' ? 30 : (type === 'elite' ? 5 : 1), // 恢复正式血量配置
+        hp: type === 'boss' ? 30 : (type === 'elite' ? 3 : 1),
         lastShootTime: 0 // 初始化射击时间
     };
     if (type === 'boss') bossSpawned = true;
@@ -428,6 +447,7 @@ io.on('connection', (socket) => {
                 type: 'laser'
             };
             io.emit('powerupSpawned', powerups[powerupId]);
+            schedulePowerupExpiry(powerupId);
         }
     }
 
@@ -498,6 +518,7 @@ io.on('connection', (socket) => {
                         type: type
                     };
                     io.emit('powerupSpawned', powerups[powerupId]);
+                    schedulePowerupExpiry(powerupId);
                 }
                 
                 // 3秒后自动补充一个普通敌人（如果不是 BOSS 死亡）
@@ -543,6 +564,10 @@ io.on('connection', (socket) => {
         enemyIdCounter = 0;
         bossSpawned = false; // 重置 BOSS 状态
         powerups = {};
+        for (const tid in powerupTimeouts) {
+            clearTimeout(powerupTimeouts[tid]);
+        }
+        powerupTimeouts = {};
         powerupIdCounter = 0;
         if (eliteSpawnTimer) clearInterval(eliteSpawnTimer);
         eliteSpawnTimer = null;
@@ -604,6 +629,10 @@ io.on('connection', (socket) => {
         if (powerups[id]) {
             const type = powerups[id].type;
             delete powerups[id];
+            if (powerupTimeouts[id]) {
+                clearTimeout(powerupTimeouts[id]);
+                delete powerupTimeouts[id];
+            }
             // 广播道具消失
             io.emit('powerupDestroyed', id);
             
@@ -699,6 +728,11 @@ io.on('connection', (socket) => {
             enemies = {};
             enemyIdCounter = 0;
             bossSpawned = false;
+            for (const tid in powerupTimeouts) {
+                clearTimeout(powerupTimeouts[tid]);
+            }
+            powerupTimeouts = {};
+            powerups = {};
             gameState = 'WAITING';
             initServerMap(); // 恢复地图
             console.log('[SERVER] 所有玩家已离开，重置游戏状态');

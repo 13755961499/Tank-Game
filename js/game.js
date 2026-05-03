@@ -256,7 +256,7 @@ class Game {
         const enemyPoints = CONFIG.SPAWN_POINTS.ENEMY;
         const spawnPoint = enemyPoints[Math.floor(Math.random() * enemyPoints.length)];
         const elite = new EnemyTank(spawnPoint.x * CONFIG.TILE_SIZE, spawnPoint.y * CONFIG.TILE_SIZE);
-        elite.hp = 5;
+        elite.hp = 3;
         elite.color = CONFIG.COLORS.ELITE;
         elite.isElite = true;
         this.enemies.push(elite);
@@ -319,7 +319,7 @@ class Game {
                     const e = new EnemyTank(enemy.x, enemy.y);
                     e.id = id;
                     if (enemy.type === 'elite') {
-                        e.hp = 5;
+                        e.hp = enemy.hp;
                         e.color = CONFIG.COLORS.ELITE;
                         e.isElite = true;
                     } else if (enemy.type === 'boss') {
@@ -346,7 +346,7 @@ class Game {
             const e = new EnemyTank(enemy.x, enemy.y);
             e.id = enemy.id;
             if (enemy.type === 'elite') {
-                e.hp = 5;
+                e.hp = enemy.hp;
                 e.color = CONFIG.COLORS.ELITE;
                 e.isElite = true;
                 console.log(`[DEBUG] 已将 ${enemy.id} 标记为精英坦克`);
