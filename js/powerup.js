@@ -8,7 +8,7 @@ class Powerup {
         this.type = type;
         this.active = true;
         this.timer = 0;
-        this.duration = 10000; // 10秒后自动消失
+        this.duration = 60000; // 增加到60秒，方便测试
     }
 
     update(dt) {

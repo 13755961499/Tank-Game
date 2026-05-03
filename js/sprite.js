@@ -2,7 +2,7 @@
  * 绘图渲染辅助
  */
 const SpriteRenderer = {
-    drawTank(ctx, x, y, direction, color, isPlayer, isElite = false) {
+    drawTank(ctx, x, y, direction, color, isPlayer, isElite = false, isBoss = false) {
         ctx.save();
         ctx.translate(x + CONFIG.TILE_SIZE / 2, y + CONFIG.TILE_SIZE / 2);
         
@@ -16,28 +16,27 @@ const SpriteRenderer = {
         const s = CONFIG.TILE_SIZE;
         const p = 4;
 
-        // 核心优化：如果是精英怪，增加蓝色外发光效果
-        if (isElite) {
-            ctx.shadowBlur = 15;
-            ctx.shadowColor = '#00BFFF'; // 深天蓝发光
+        // 核心优化：如果是精英怪或 BOSS，增加发光效果
+        if (isElite || isBoss) {
+            ctx.shadowBlur = isBoss ? 25 : 15;
+            ctx.shadowColor = isBoss ? '#FF0000' : '#00BFFF'; 
             ctx.strokeStyle = '#FFFFFF';
             ctx.lineWidth = 2;
         }
 
-        // 履带 (精英怪和普通怪颜色保持一致，均为 #333)
+        // 履带
         ctx.fillStyle = '#333';
-        const trackWidth = isElite ? 10 : 8;
+        const trackWidth = (isElite || isBoss) ? 10 : 8;
         ctx.fillRect(-s/2 + p, -s/2 + p, trackWidth, s - p*2);
         ctx.fillRect(s/2 - p - trackWidth, -s/2 + p, trackWidth, s - p*2);
 
         // 车身
-        // 核心修复：强制精英怪车身为蓝色，防止颜色同步或初始化问题导致显示为红色
-        ctx.fillStyle = isElite ? '#0000FF' : color; 
+        ctx.fillStyle = isBoss ? CONFIG.COLORS.BOSS : (isElite ? '#0000FF' : color); 
         ctx.fillRect(-s/2 + p + 6, -s/2 + p + 4, s - (p+6)*2, s - (p+4)*2);
         
-        // 精英怪的装饰：银色装甲片
-        if (isElite) {
-            ctx.fillStyle = '#bdc3c7';
+        // 装饰
+        if (isElite || isBoss) {
+            ctx.fillStyle = isBoss ? '#f1c40f' : '#bdc3c7'; // BOSS 金色装饰
             ctx.fillRect(-s/2 + p + 8, -s/2 + p + 6, 4, 4);
             ctx.fillRect(s/2 - p - 12, -s/2 + p + 6, 4, 4);
             ctx.fillRect(-s/2 + p + 8, s/2 - p - 10, 4, 4);
@@ -45,37 +44,45 @@ const SpriteRenderer = {
         }
 
         // 炮塔
-        // 精英怪炮塔主体蓝色，中心亮色
-        ctx.fillStyle = isPlayer ? '#d4ac0d' : (isElite ? '#1a237e' : '#c0392b');
-        if (isElite) {
-            // 精英怪炮塔呈菱形，更显科幻
+        ctx.fillStyle = isPlayer ? '#d4ac0d' : (isBoss ? '#c0392b' : (isElite ? '#1a237e' : '#c0392b'));
+        if (isElite || isBoss) {
             ctx.beginPath();
-            ctx.moveTo(0, -12);
-            ctx.lineTo(12, 0);
-            ctx.lineTo(0, 12);
-            ctx.lineTo(-12, 0);
+            if (isBoss) {
+                // BOSS 炮塔呈六边形，更霸气
+                for (let i = 0; i < 6; i++) {
+                    const angle = (Math.PI / 3) * i;
+                    const rx = Math.cos(angle) * 14;
+                    const ry = Math.sin(angle) * 14;
+                    if (i === 0) ctx.moveTo(rx, ry);
+                    else ctx.lineTo(rx, ry);
+                }
+            } else {
+                ctx.moveTo(0, -12);
+                ctx.lineTo(12, 0);
+                ctx.lineTo(0, 12);
+                ctx.lineTo(-12, 0);
+            }
             ctx.closePath();
             ctx.fill();
-            ctx.strokeStyle = '#00BFFF';
+            ctx.strokeStyle = isBoss ? '#FF0000' : '#00BFFF';
             ctx.lineWidth = 2;
             ctx.stroke();
             
-            // 炮塔中心的能量核心
-            ctx.fillStyle = '#00BFFF';
+            // 能量核心
+            ctx.fillStyle = isBoss ? '#FF0000' : '#00BFFF';
             ctx.beginPath();
-            ctx.arc(0, 0, 4, 0, Math.PI * 2);
+            ctx.arc(0, 0, isBoss ? 6 : 4, 0, Math.PI * 2);
             ctx.fill();
         } else {
             ctx.fillRect(-6, -6, 12, 12);
         }
 
         // 炮管
-        ctx.fillStyle = isElite ? '#00BFFF' : '#95a5a6';
-        if (isElite) {
-            // 精英怪：加粗的电磁炮管感
-            ctx.fillRect(-4, -s/2 - 2, 8, s/2 + 2);
+        ctx.fillStyle = isBoss ? '#FF0000' : (isElite ? '#00BFFF' : '#95a5a6');
+        if (isElite || isBoss) {
+            ctx.fillRect(-5, -s/2 - 6, 10, s/2 + 6); // BOSS 炮管更粗更长
             ctx.fillStyle = '#FFFFFF';
-            ctx.fillRect(-2, -s/2, 4, s/2 - 4);
+            ctx.fillRect(-2, -s/2 - 4, 4, s/2);
         } else {
             ctx.fillRect(-2, -s/2 + 2, 4, s/2);
         }

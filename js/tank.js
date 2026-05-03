@@ -11,6 +11,7 @@ class Tank {
         this.hp = CONFIG.TANK_HP;
         this.active = true;
         this.isElite = false; // 显式初始化精英怪标识
+        this.isBoss = false;  // BOSS 标识
         this.isShielded = false; // 护盾状态
         this.laserCount = 0; // 激光子弹剩余数量
         this.lastShotTime = 0;
@@ -28,7 +29,7 @@ class Tank {
 
     draw(ctx) {
         if (!this.active) return;
-        SpriteRenderer.drawTank(ctx, this.x, this.y, this.direction, this.color, this instanceof PlayerTank, this.isElite);
+        SpriteRenderer.drawTank(ctx, this.x, this.y, this.direction, this.color, this instanceof PlayerTank, this.isElite, this.isBoss);
         
         // 绘制护盾光圈
         if (this.isShielded) {
@@ -61,6 +62,13 @@ class Tank {
                 bullet.isLaser = true;
                 bullet.damage = 5;
                 return bullet;
+            }
+            
+            if (this.isBoss) {
+                const b = new Bullet(bx, by, this.direction, 'enemy');
+                b.isBoss = true;
+                b.damage = 2;
+                return b;
             }
             
             return new Bullet(bx, by, this.direction, this instanceof PlayerTank ? 'player' : 'enemy');
@@ -197,6 +205,7 @@ class Bullet {
         this.speed = CONFIG.BULLET_SPEED;
         this.active = true;
         this.isElite = false; // 精英怪子弹
+        this.isBoss = false;  // BOSS 子弹
         this.isLaser = false; // 激光子弹
         this.damage = 1;      // 默认伤害
     }
@@ -207,11 +216,14 @@ class Bullet {
             this.active = false;
             return;
         }
+        let currentSpeed = this.speed;
+        if (this.isBoss) currentSpeed *= 1.2; // BOSS 子弹稍微快一点
+        
         switch(this.direction) {
-            case CONFIG.DIRECTIONS.UP: this.y -= this.speed; break;
-            case CONFIG.DIRECTIONS.DOWN: this.y += this.speed; break;
-            case CONFIG.DIRECTIONS.LEFT: this.x -= this.speed; break;
-            case CONFIG.DIRECTIONS.RIGHT: this.x += this.speed; break;
+            case CONFIG.DIRECTIONS.UP: this.y -= currentSpeed; break;
+            case CONFIG.DIRECTIONS.DOWN: this.y += currentSpeed; break;
+            case CONFIG.DIRECTIONS.LEFT: this.x -= currentSpeed; break;
+            case CONFIG.DIRECTIONS.RIGHT: this.x += currentSpeed; break;
         }
         
         if (this.x < 0 || this.x > CONFIG.WIDTH || this.y < 0 || this.y > CONFIG.HEIGHT) {
@@ -230,6 +242,21 @@ class Bullet {
 
     draw(ctx) {
         if (!this.active || this.isLaser) return;
-        SpriteRenderer.drawBullet(ctx, this.x, this.y);
+        if (this.isBoss) {
+            ctx.fillStyle = CONFIG.COLORS.BULLET_BOSS;
+        } else {
+            ctx.fillStyle = CONFIG.COLORS.BULLET;
+        }
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, (this.isBoss ? CONFIG.BULLET_SIZE * 1.5 : CONFIG.BULLET_SIZE) / 2, 0, Math.PI * 2);
+        ctx.fill();
+        
+        if (this.isBoss) {
+            // BOSS 子弹发光效果
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#FF0000';
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+        }
     }
 }

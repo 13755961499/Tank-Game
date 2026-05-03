@@ -112,22 +112,27 @@ class Game {
                     }
                 } else {
                     // 处理普通坦克(EnemyTank)和远程玩家(RemoteTank)
-                    tank.hp -= damage;
-                    if (tank.hp <= 0) {
-                        tank.active = false;
-                        if (this.isMultiplayer && this.socket) {
-                            // 如果是 AI 敌人
-                            if (tank instanceof EnemyTank) {
-                                this.socket.emit('enemyHit', { id: tank.id });
+                    // BOSS 对激光有抗性，伤害固定为 2
+                    const actualDamage = tank.isBoss ? 2 : damage;
+                    
+                    if (this.isMultiplayer && this.socket) {
+                        // 联机模式：发送伤害给服务器，由服务器统一扣血
+                        this.socket.emit('enemyHit', { id: tank.id, damage: actualDamage });
+                    } else {
+                        // 单机模式：本地扣血
+                        tank.hp -= actualDamage;
+                        if (tank.hp <= 0) {
+                            tank.active = false;
+                            if (tank.isBoss) {
+                                this.gameOver(true, true); // 击杀 BOSS 直接胜利
                             }
-                            // 注意：RemoteTank 的血量由对方客户端自行处理，这里仅做本地表现
-                        } else {
                             // 单机模式得分逻辑
                             if (tank instanceof EnemyTank) {
                                 this.score += (tank.isElite ? 500 : 100);
+                                if (tank.isBoss) this.score += 5000;
                                 this.updateHUD();
-                                // 精英怪必掉道具
-                                if (tank.isElite || Math.random() < CONFIG.POWERUP_CHANCE) {
+                                // 精英怪和 BOSS 必掉道具
+                                if (tank.isElite || tank.isBoss || Math.random() < CONFIG.POWERUP_CHANCE) {
                                     const types = Object.values(CONFIG.POWERUP_TYPES);
                                     this.powerups.push(new Powerup(tank.x, tank.y, types[Math.floor(Math.random() * types.length)]));
                                 }
@@ -232,14 +237,14 @@ class Game {
         // 单机模式开局立即生成一只精英坦克
         if (!this.isMultiplayer) {
             this.spawnSingleElite();
+            
+            // 为测试添加：开局在玩家前方生成一个激光道具 (仅单机模式在这里生成)
+            const laserX = startX;
+            const laserY = startY - CONFIG.TILE_SIZE * 2;
+            const testLaser = new Powerup(laserX, laserY, CONFIG.POWERUP_TYPES.LASER);
+            testLaser.id = 'test_laser_' + Date.now();
+            this.powerups.push(testLaser);
         }
-
-        // 为测试添加：开局在玩家前方生成一个激光道具
-        const laserX = startX;
-        const laserY = startY - CONFIG.TILE_SIZE * 2;
-        const testLaser = new Powerup(laserX, laserY, CONFIG.POWERUP_TYPES.LASER);
-        testLaser.id = 'test_laser_' + Date.now();
-        this.powerups.push(testLaser);
     }
 
     /**
@@ -257,6 +262,22 @@ class Game {
         elite.isElite = true;
         this.enemies.push(elite);
         this.lastEliteSpawnTime = Date.now();
+    }
+
+    /**
+     * 单机模式生成 BOSS 坦克
+     */
+    spawnBoss() {
+        if (this.enemies.some(e => e.isBoss)) return; // 场上只能有一个 BOSS
+
+        const enemyPoints = CONFIG.SPAWN_POINTS.ENEMY;
+        const spawnPoint = enemyPoints[Math.floor(Math.random() * enemyPoints.length)];
+        const boss = new EnemyTank(spawnPoint.x * CONFIG.TILE_SIZE, spawnPoint.y * CONFIG.TILE_SIZE);
+        boss.hp = 30; // 恢复正式血量
+        boss.color = CONFIG.COLORS.BOSS;
+        boss.isBoss = true;
+        this.enemies.push(boss);
+        console.log('%c BOSS 出现了！', 'color: red; font-size: 20px; font-weight: bold;');
     }
 
     initSocket() {
@@ -301,6 +322,10 @@ class Game {
                         e.hp = 5;
                         e.color = CONFIG.COLORS.ELITE;
                         e.isElite = true;
+                    } else if (enemy.type === 'boss') {
+                        e.hp = 30;
+                        e.color = CONFIG.COLORS.BOSS;
+                        e.isBoss = true;
                     }
                     this.enemies.push(e);
                 }
@@ -316,6 +341,11 @@ class Game {
                 e.color = CONFIG.COLORS.ELITE;
                 e.isElite = true;
                 console.log(`[DEBUG] 已将 ${enemy.id} 标记为精英坦克`);
+            } else if (enemy.type === 'boss') {
+                e.hp = 30;
+                e.color = CONFIG.COLORS.BOSS;
+                e.isBoss = true;
+                console.log(`[DEBUG] 已将 ${enemy.id} 标记为 BOSS 坦克`);
             }
             this.enemies.push(e);
         });
@@ -369,6 +399,10 @@ class Game {
             } else {
                 const b = new Bullet(data.x, data.y, data.direction, data.type || 'enemy');
                 if (data.isElite) b.isElite = true; // 标记精英子弹
+                if (data.isBoss) {
+                    b.isBoss = true;
+                    b.damage = data.damage || 2;
+                }
                 this.bullets.push(b);
             }
         });
@@ -458,6 +492,13 @@ class Game {
             this.score = score;
             this.updateHUD();
         });
+
+        this.socket.on('enemyUpdate', (data) => {
+            const enemy = this.enemies.find(e => e.id === data.id);
+            if (enemy) {
+                enemy.hp = data.hp;
+            }
+        });
     }
 
     togglePause() {
@@ -471,14 +512,26 @@ class Game {
         }
     }
 
-    gameOver(force = false) {
+    gameOver(force = false, isWin = false) {
         if (this.state === 'GAMEOVER' && !force) return; 
         this.state = 'GAMEOVER';
         if (this.score > this.highScore) {
             this.highScore = this.score;
             localStorage.setItem('tankGame_highScore', this.highScore);
         }
-        document.getElementById('game-over-screen').classList.remove('hidden');
+        
+        const overScreen = document.getElementById('game-over-screen');
+        const overTitle = document.getElementById('game-over-title');
+        
+        overScreen.classList.remove('hidden');
+        if (isWin) {
+            overTitle.innerText = '恭喜通关！';
+            overTitle.style.color = '#f1c40f'; // 金色
+        } else {
+            overTitle.innerText = '游戏结束';
+            overTitle.style.color = '#e74c3c'; // 红色
+        }
+        
         document.getElementById('final-score').innerText = this.score;
         document.getElementById('high-score-over').innerText = this.highScore;
         AudioManager.playExplosion();
@@ -555,6 +608,11 @@ class Game {
             const now = Date.now();
             if (now - this.lastEliteSpawnTime > this.eliteSpawnInterval) {
                 this.spawnSingleElite();
+            }
+
+            // BOSS 触发逻辑：1000 分且场上没有 BOSS
+            if (this.score >= 1000 && !this.enemies.some(e => e.isBoss)) {
+                this.spawnBoss();
             }
         }
 
@@ -660,29 +718,29 @@ class Game {
                         // 再次确认护盾（双重保险）
                         if (this.player.isShielded) break;
                         
-                        this.hp--;
+                        const actualDamage = bullet.damage || 1;
+                        this.hp -= actualDamage;
                         this.updateHUD();
                         if (this.isMultiplayer && this.socket) {
                             this.socket.emit('playerHit', { hp: this.hp });
                         }
                         if (this.hp <= 0) this.gameOver();
                     } else if (tank instanceof EnemyTank) {
-                        if (this.isMultiplayer) {
-                            if (tank.isElite) {
-                                // 精英坦克需要打 5 下
-                                tank.hp--;
-                                if (tank.hp <= 0) {
-                                    this.socket.emit('enemyHit', { id: tank.id });
-                                    tank.active = false;
-                                }
-                            } else {
-                                this.socket.emit('enemyHit', { id: tank.id });
-                                tank.active = false;
-                            }
+                        const damage = bullet.damage || 1;
+                        if (this.isMultiplayer && this.socket) {
+                            // 联机模式：发送伤害给服务器
+                            this.socket.emit('enemyHit', { id: tank.id, damage: damage });
                         } else {
-                            // 单机模式精英怪逻辑
-                            if (tank.isElite) {
-                                tank.hp--;
+                            // 单机模式 BOSS 逻辑
+                            if (tank.isBoss) {
+                                tank.hp -= damage;
+                                if (tank.hp <= 0) {
+                                tank.active = false;
+                                this.score += 5000;
+                                this.gameOver(true, true); // 击杀胜利
+                            }
+                            } else if (tank.isElite) {
+                                tank.hp -= damage;
                                 if (tank.hp <= 0) {
                                     tank.active = false;
                                     this.score += 500; // 精英怪 500 分
@@ -801,8 +859,22 @@ class Game {
                 }
                 break;
             case CONFIG.POWERUP_TYPES.BOMB: 
-                this.enemies.forEach(e => { this.createExplosion(e.x+16, e.y+16); this.score+=100; });
-                this.enemies = []; break;
+                this.enemies.forEach(e => {
+                    this.createExplosion(e.x+16, e.y+16);
+                    if (e.isBoss) {
+                        e.hp -= 3;
+                        if (e.hp <= 0) {
+                            e.active = false;
+                            this.score += 5000;
+                            this.gameOver(true, true);
+                        }
+                    } else {
+                        e.active = false;
+                        this.score += (e.isElite ? 500 : 100);
+                    }
+                });
+                this.enemies = this.enemies.filter(e => e.active);
+                break;
             case CONFIG.POWERUP_TYPES.STAR:
                 if (this.player) {
                     this.player.shootInterval = 200;

@@ -18,6 +18,7 @@ let enemies = {}; // 服务端管理的AI敌人
 let mapData = null;
 let enemyIdCounter = 0;
 let teamScore = 0; // 全局团队分数
+let bossSpawned = false; // BOSS 是否已生成
 let powerups = {}; // 服务端管理的道具
 let powerupIdCounter = 0;
 let gameState = 'WAITING'; // WAITING, PLAYING, GAMEOVER
@@ -75,7 +76,7 @@ function initServerMap() {
     // 核心修复：确保所有出生点位置都是空的 (0)
     const clearSpawnPoints = [
         { x: 1, y: 1 }, { x: 12, y: 1 }, { x: 24, y: 1 }, // 敌人出生点
-        { x: 8, y: 18 }, { x: 17, y: 18 }, { x: 1, y: 18 }, { x: 24, y: 18 } // 玩家出生点
+        { x: 10, y: 18 }, { x: 16, y: 18 } // 玩家出生点 (老家左右三格)
     ];
     clearSpawnPoints.forEach(p => {
         if (mapData[p.y]) mapData[p.y][p.x] = 0;
@@ -149,14 +150,19 @@ function checkCollision(x, y, excludeId = null) {
 
 // 封装生成 AI 的逻辑
 function spawnEnemy(type = 'ai') {
-    if (type === 'ai' && Object.keys(enemies).filter(id => !id.startsWith('elite')).length >= 6) return;
+    if (type === 'ai' && Object.keys(enemies).filter(id => !id.startsWith('elite') && !id.startsWith('boss')).length >= 6) return;
     
     // 核心限制：场上精英坦克最多存在 2 只
     if (type === 'elite' && Object.keys(enemies).filter(id => id.startsWith('elite')).length >= 2) {
         return;
     }
 
-    const id = type === 'elite' ? `elite_${enemyIdCounter++}` : `ai_${enemyIdCounter++}`;
+    // BOSS 限制
+    if (type === 'boss' && (bossSpawned || Object.keys(enemies).some(id => id.startsWith('boss')))) {
+        return;
+    }
+
+    const id = type === 'boss' ? `boss_${enemyIdCounter++}` : (type === 'elite' ? `elite_${enemyIdCounter++}` : `ai_${enemyIdCounter++}`);
     
     // 使用固定的安全出生点 (网格坐标转像素)
     const spawnPoints = [
@@ -170,17 +176,16 @@ function spawnEnemy(type = 'ai') {
     const shuffledPoints = spawnPoints.sort(() => Math.random() - 0.5);
     
     for (let p of shuffledPoints) {
-        // 对于精英坦克，我们稍微放宽一点碰撞检测，或者如果失败了就强制选一个
+        // 对于精英坦克和 BOSS，我们稍微放宽一点碰撞检测，或者如果失败了就强制选一个
         if (!checkCollision(p.x, p.y)) {
             bestPoint = p;
             break;
         }
     }
     
-    // 如果是精英坦克但没找到空位，强制选择一个出生点（防止开局刷不出来）
-    if (!bestPoint && type === 'elite') {
+    // 如果是精英坦克或 BOSS 但没找到空位，强制选择一个出生点
+    if (!bestPoint && (type === 'elite' || type === 'boss')) {
         bestPoint = shuffledPoints[0];
-        console.log(`[SERVER] 精英坦克出生点拥挤，强制选择位置: ${bestPoint.x}, ${bestPoint.y}`);
     }
     
     if (!bestPoint) return;
@@ -191,8 +196,9 @@ function spawnEnemy(type = 'ai') {
         y: bestPoint.y,
         direction: 1, // DOWN
         type: type,
-        hp: type === 'elite' ? 5 : 1
+        hp: type === 'boss' ? 30 : (type === 'elite' ? 5 : 1) // 恢复正式血量配置
     };
+    if (type === 'boss') bossSpawned = true;
     io.emit('enemySpawned', enemies[id]);
 }
 
@@ -208,7 +214,7 @@ function startEliteCycle() {
     }, 500);
 
     eliteSpawnTimer = setInterval(() => {
-        if (gameState === 'PLAYING' && Object.keys(players).length >= 2) {
+        if (gameState === 'PLAYING' && Object.keys(players).length >= 1) {
             console.log('[SERVER] 30秒周期：尝试生成精英坦克');
             spawnEnemy('elite');
         }
@@ -288,9 +294,17 @@ function updateAI() {
                 y: by,
                 direction: enemy.direction,
                 type: 'enemy',
-                isElite: enemy.type === 'elite' // 标记是否为精英子弹
+                isElite: enemy.type === 'elite',
+                isBoss: enemy.type === 'boss',
+                damage: enemy.type === 'boss' ? 2 : 1
             });
         }
+    }
+
+    // 检查是否需要生成 BOSS
+    if (teamScore >= 1000 && !bossSpawned) {
+        console.log(`[SERVER] 团队分数达到 ${teamScore}，触发 BOSS 生成逻辑`);
+        spawnEnemy('boss');
     }
 
     if (Object.keys(enemies).length > 0) {
@@ -347,18 +361,27 @@ io.on('connection', (socket) => {
         socket.emit('currentPlayers', players);
         // 发送当前团队分数给新加入的玩家
         socket.emit('scoreUpdate', teamScore);
-        // 发送当前存在的道具给新玩家
-        if (Object.keys(powerups).length > 0) {
-            socket.emit('currentPowerups', powerups);
-        }
+        // 发送当前存在的道具给新玩家 (始终发送，确保同步)
+        socket.emit('currentPowerups', powerups);
+        
+        // 核心修复：为每个新加入的玩家生成一个开局激光（同步到全服），确保测试可用
+        const powerupId = `pw_init_laser_${socket.id}`;
+        powerups[powerupId] = {
+            id: powerupId,
+            x: playerData.x,
+            y: playerData.y - 64, // 在玩家上方两格生成
+            type: 'laser'
+        };
+        io.emit('powerupSpawned', powerups[powerupId]);
+
         // 发送当前游戏状态
         socket.emit('gameStateUpdate', gameState);
 
-        // 检查人数是否足够开始游戏
-        if (gameState === 'WAITING' && Object.keys(players).length >= 2) {
+        // 检查人数是否足够开始游戏 (修改：为了方便测试，1 人即可开始，但逻辑建议 2 人)
+        if (gameState === 'WAITING' && Object.keys(players).length >= 1) {
             gameState = 'PLAYING';
             io.emit('gameStateUpdate', 'PLAYING');
-            console.log('[SERVER] 玩家人数足够，游戏开始！');
+            console.log(`[SERVER] 玩家人数足够 (${Object.keys(players).length}人)，游戏开始！`);
             startEliteCycle(); // 开启精英坦克循环
             // 立即生成一个 AI
             if (Object.keys(enemies).length === 0) {
@@ -389,37 +412,57 @@ io.on('connection', (socket) => {
     socket.on('enemyHit', (data) => {
         if (enemies[data.id]) {
             const enemy = enemies[data.id];
-            const enemyPos = { x: enemy.x, y: enemy.y };
-            const isElite = enemy.type === 'elite';
-            delete enemies[data.id];
+            const damage = data.damage || 1;
             
-            // 增加团队分数并同步给所有玩家
-            teamScore += isElite ? 500 : 100; // 精英怪给更多分
-            io.emit('scoreUpdate', teamScore);
+            enemy.hp -= damage;
             
-            io.emit('enemyDestroyed', data.id);
+            // 广播血量更新给所有玩家（可选，用于 UI 同步）
+            io.emit('enemyUpdate', { id: data.id, hp: enemy.hp });
 
-            // 道具生成逻辑
-            // 核心修复：精英怪 (elite) 100% 掉落道具，普通怪保持 25% 概率
-            if (isElite || Math.random() < 0.25) {
-                const types = ['life', 'bomb', 'star', 'shovel', 'repair', 'shield'];
-                const type = types[Math.floor(Math.random() * types.length)];
-                const powerupId = `pw_${powerupIdCounter++}`;
-                powerups[powerupId] = {
-                    id: powerupId,
-                    x: enemyPos.x,
-                    y: enemyPos.y,
-                    type: type
-                };
-                io.emit('powerupSpawned', powerups[powerupId]);
-            }
-            
-            // 3秒后自动补充一个敌人
-            setTimeout(() => {
-                if (Object.keys(players).length > 0) {
-                    spawnEnemy();
+            if (enemy.hp <= 0) {
+                const enemyPos = { x: enemy.x, y: enemy.y };
+                const isElite = enemy.type === 'elite';
+                const isBoss = enemy.type === 'boss';
+                
+                delete enemies[data.id];
+                
+                // 增加团队分数
+                if (isBoss) {
+                    teamScore += 5000;
+                    if (gameState === 'PLAYING') {
+                        gameState = 'GAMEOVER';
+                        io.emit('gameStateUpdate', 'GAMEOVER');
+                    }
+                } else {
+                    teamScore += isElite ? 500 : 100;
                 }
-            }, 3000);
+                
+                io.emit('scoreUpdate', teamScore);
+                io.emit('enemyDestroyed', data.id);
+
+                // 道具生成逻辑
+                if (isElite || isBoss || Math.random() < 0.25) {
+                    const types = ['life', 'bomb', 'star', 'shovel', 'repair', 'shield', 'laser'];
+                    const type = types[Math.floor(Math.random() * types.length)];
+                    const powerupId = `pw_${powerupIdCounter++}`;
+                    powerups[powerupId] = {
+                        id: powerupId,
+                        x: enemyPos.x,
+                        y: enemyPos.y,
+                        type: type
+                    };
+                    io.emit('powerupSpawned', powerups[powerupId]);
+                }
+                
+                // 3秒后自动补充一个普通敌人（如果不是 BOSS 死亡）
+                if (!isBoss) {
+                    setTimeout(() => {
+                        if (Object.keys(players).length > 0) {
+                            spawnEnemy();
+                        }
+                    }, 3000);
+                }
+            }
         }
     });
 
@@ -452,6 +495,7 @@ io.on('connection', (socket) => {
         teamScore = 0;
         enemies = {};
         enemyIdCounter = 0;
+        bossSpawned = false; // 重置 BOSS 状态
         powerups = {};
         powerupIdCounter = 0;
         if (eliteSpawnTimer) clearInterval(eliteSpawnTimer);
@@ -459,13 +503,25 @@ io.on('connection', (socket) => {
         initServerMap();
         
         // 核心修复：重置后立即检查人数，决定是 WAITING 还是 PLAYING
-        if (Object.keys(players).length >= 2) {
+        if (Object.keys(players).length >= 1) {
             gameState = 'PLAYING';
-            console.log(`[SERVER] 玩家 ${socket.id} 请求重置，人数充足，游戏开始`);
+            console.log(`[SERVER] 玩家 ${socket.id} 请求重置，人数充足 (${Object.keys(players).length}人)，游戏开始`);
             startEliteCycle();
         } else {
             gameState = 'WAITING';
             console.log(`[SERVER] 玩家 ${socket.id} 请求重置，人数不足，等待中`);
+        }
+
+        // 测试专用：重置时为每个玩家生成一个测试激光道具
+        for (let pid in players) {
+            const p = players[pid];
+            const powerupId = `pw_test_laser_${powerupIdCounter++}`;
+            powerups[powerupId] = {
+                id: powerupId,
+                x: p.x,
+                y: p.y - 64, // 在玩家上方生成
+                type: 'laser'
+            };
         }
         
         io.emit('scoreUpdate', teamScore);
@@ -502,11 +558,32 @@ io.on('connection', (socket) => {
             
             // 1. 如果是炸弹，同步全屏爆炸
             if (type === 'bomb') {
+                const enemiesToDelete = [];
                 for (let eid in enemies) {
                     const enemy = enemies[eid];
-                    teamScore += (enemy.type === 'elite' ? 500 : 100);
-                    delete enemies[eid];
+                    if (enemy.type === 'boss') {
+                        enemy.hp -= 3;
+                        io.emit('enemyUpdate', { id: eid, hp: enemy.hp }); // 同步 BOSS 血量
+                        if (enemy.hp <= 0) {
+                            enemiesToDelete.push(eid);
+                            teamScore += 5000;
+                            if (gameState === 'PLAYING') {
+                                gameState = 'GAMEOVER';
+                                io.emit('gameStateUpdate', 'GAMEOVER');
+                            }
+                        }
+                    } else {
+                        teamScore += (enemy.type === 'elite' ? 500 : 100);
+                        enemiesToDelete.push(eid);
+                    }
                 }
+                
+                // 统一删除
+                enemiesToDelete.forEach(eid => {
+                    delete enemies[eid];
+                    io.emit('enemyDestroyed', eid);
+                });
+
                 io.emit('scoreUpdate', teamScore);
                 io.emit('allEnemiesDestroyed');
             }
@@ -565,14 +642,10 @@ io.on('connection', (socket) => {
             teamScore = 0;
             enemies = {};
             enemyIdCounter = 0;
+            bossSpawned = false;
             gameState = 'WAITING';
             initServerMap(); // 恢复地图
             console.log('[SERVER] 所有玩家已离开，重置游戏状态');
-        } else if (Object.keys(players).length < 2 && gameState === 'PLAYING') {
-            // 如果人数不足 2 人且正在游戏中，回到等待状态
-            gameState = 'WAITING';
-            io.emit('gameStateUpdate', 'WAITING');
-            console.log('[SERVER] 玩家人数不足 2 人，回到等待状态');
         }
     });
 });

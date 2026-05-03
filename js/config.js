@@ -41,7 +41,9 @@ const CONFIG = {
         PLAYER: '#f1c40f',
         ENEMY: '#e74c3c',
         ELITE: '#0000FF',       // 精英坦克蓝色
+        BOSS: '#FF0000',        // BOSS 坦克鲜红色
         BULLET: '#ffffff',
+        BULLET_BOSS: '#FF0000', // BOSS 子弹红色
         BASE: '#f1c40f',
         POWERUP: '#9b59b6'      // 道具紫色
     },
@@ -71,10 +73,8 @@ const CONFIG = {
             { x: 24, y: 1 }   // 右上
         ],
         PLAYER: [
-            { x: 8, y: 18 },  // 下左 (老家左侧空地)
-            { x: 17, y: 18 }, // 下右 (老家右侧空地)
-            { x: 1, y: 18 },  // 左下角
-            { x: 24, y: 18 }  // 右下角
+            { x: 10, y: 18 }, // 老家左侧三格 (13-3)
+            { x: 16, y: 18 }  // 老家右侧三格 (13+3)
         ]
     }
 };
