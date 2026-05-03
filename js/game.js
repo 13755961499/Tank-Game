@@ -98,6 +98,8 @@ class Game {
         this.state = 'PLAYING';
         this.score = 0;
         this.hp = CONFIG.INITIAL_HP;
+        this.lastEliteSpawnTime = 0; // 单机模式精英怪计时
+        this.eliteSpawnInterval = 30000; // 30秒一次
         
         // 使用固定的安全出生点
         const playerPoints = CONFIG.SPAWN_POINTS.PLAYER;
@@ -119,6 +121,28 @@ class Game {
             this.remotePlayers[id].hp = CONFIG.INITIAL_HP;
             this.remotePlayers[id].active = true;
         }
+
+        // 单机模式开局立即生成一只精英坦克
+        if (!this.isMultiplayer) {
+            this.spawnSingleElite();
+        }
+    }
+
+    /**
+     * 单机模式生成精英坦克
+     */
+    spawnSingleElite() {
+        const eliteCount = this.enemies.filter(e => e.isElite).length;
+        if (eliteCount >= 2) return; // 最多两只
+
+        const enemyPoints = CONFIG.SPAWN_POINTS.ENEMY;
+        const spawnPoint = enemyPoints[Math.floor(Math.random() * enemyPoints.length)];
+        const elite = new EnemyTank(spawnPoint.x * CONFIG.TILE_SIZE, spawnPoint.y * CONFIG.TILE_SIZE);
+        elite.hp = 5;
+        elite.color = CONFIG.COLORS.ELITE;
+        elite.isElite = true;
+        this.enemies.push(elite);
+        this.lastEliteSpawnTime = Date.now();
     }
 
     initSocket() {
@@ -384,15 +408,24 @@ class Game {
     update() {
         const dt = 16;
 
-        // 1. 生成敌人 (仅单机模式，3秒补充逻辑)
-        if (!this.isMultiplayer && this.enemies.length < CONFIG.MAX_ENEMIES) {
-            if (!this.lastEnemySpawnTime) this.lastEnemySpawnTime = 0;
+        // 1. 生成敌人 (仅单机模式)
+        if (!this.isMultiplayer) {
+            // 普通坦克补充逻辑 (3秒补充一只，场上最多 6 只)
+            if (this.enemies.filter(e => !e.isElite).length < CONFIG.MAX_ENEMIES) {
+                if (!this.lastEnemySpawnTime) this.lastEnemySpawnTime = 0;
+                const now = Date.now();
+                if (now - this.lastEnemySpawnTime > 3000) {
+                    const enemyPoints = CONFIG.SPAWN_POINTS.ENEMY;
+                    const spawnPoint = enemyPoints[Math.floor(Math.random() * enemyPoints.length)];
+                    this.enemies.push(new EnemyTank(spawnPoint.x * CONFIG.TILE_SIZE, spawnPoint.y * CONFIG.TILE_SIZE));
+                    this.lastEnemySpawnTime = now;
+                }
+            }
+
+            // 精英坦克补充逻辑 (30秒周期，场上最多 2 只)
             const now = Date.now();
-            if (now - this.lastEnemySpawnTime > 3000) {
-                const enemyPoints = CONFIG.SPAWN_POINTS.ENEMY;
-                const spawnPoint = enemyPoints[Math.floor(Math.random() * enemyPoints.length)];
-                this.enemies.push(new EnemyTank(spawnPoint.x * CONFIG.TILE_SIZE, spawnPoint.y * CONFIG.TILE_SIZE));
-                this.lastEnemySpawnTime = now;
+            if (now - this.lastEliteSpawnTime > this.eliteSpawnInterval) {
+                this.spawnSingleElite();
             }
         }
 
@@ -524,12 +557,25 @@ class Game {
                                 tank.active = false;
                             }
                         } else {
-                            tank.active = false;
-                            this.score += 100;
-                            this.updateHUD();
-                            if (Math.random() < CONFIG.POWERUP_CHANCE) {
-                                const types = Object.values(CONFIG.POWERUP_TYPES);
-                                this.powerups.push(new Powerup(tank.x, tank.y, types[Math.floor(Math.random() * types.length)]));
+                            // 单机模式精英怪逻辑
+                            if (tank.isElite) {
+                                tank.hp--;
+                                if (tank.hp <= 0) {
+                                    tank.active = false;
+                                    this.score += 500; // 精英怪 500 分
+                                    this.updateHUD();
+                                    // 精英怪 100% 掉落道具
+                                    const types = Object.values(CONFIG.POWERUP_TYPES);
+                                    this.powerups.push(new Powerup(tank.x, tank.y, types[Math.floor(Math.random() * types.length)]));
+                                }
+                            } else {
+                                tank.active = false;
+                                this.score += 100;
+                                this.updateHUD();
+                                if (Math.random() < CONFIG.POWERUP_CHANCE) {
+                                    const types = Object.values(CONFIG.POWERUP_TYPES);
+                                    this.powerups.push(new Powerup(tank.x, tank.y, types[Math.floor(Math.random() * types.length)]));
+                                }
                             }
                         }
                     } else if (tank instanceof RemoteTank) {
@@ -626,6 +672,13 @@ class Game {
             case CONFIG.POWERUP_TYPES.SHOVEL:
                 this.map.reinforceBase(true);
                 setTimeout(() => this.map.reinforceBase(false), 10000);
+                break;
+            case CONFIG.POWERUP_TYPES.REPAIR:
+                this.map.grid[CONFIG.MAP_ROWS - 2][Math.floor(CONFIG.MAP_COLS / 2) - 1] = CONFIG.TILE_TYPES.BRICK;
+                this.map.grid[CONFIG.MAP_ROWS - 2][Math.floor(CONFIG.MAP_COLS / 2) + 1] = CONFIG.TILE_TYPES.BRICK;
+                this.map.grid[CONFIG.MAP_ROWS - 3][Math.floor(CONFIG.MAP_COLS / 2) - 1] = CONFIG.TILE_TYPES.STEEL;
+                this.map.grid[CONFIG.MAP_ROWS - 3][Math.floor(CONFIG.MAP_COLS / 2)] = CONFIG.TILE_TYPES.STEEL;
+                this.map.grid[CONFIG.MAP_ROWS - 3][Math.floor(CONFIG.MAP_COLS / 2) + 1] = CONFIG.TILE_TYPES.STEEL;
                 break;
         }
         this.updateHUD();
