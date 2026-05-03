@@ -49,15 +49,122 @@ class Game {
         if (!this.player || !this.player.active) return;
         const b = this.player.shoot();
         if (b) {
-            this.bullets.push(b);
+            if (b.isLaser) {
+                this.fireLaser(this.player, b);
+            } else {
+                this.bullets.push(b);
+            }
             if (this.isMultiplayer && this.socket) {
                 this.socket.emit('shoot', {
                     x: b.x,
                     y: b.y,
-                    direction: b.direction
+                    direction: b.direction,
+                    isLaser: b.isLaser // 同步激光状态
                 });
             }
         }
+    }
+
+    /**
+     * 发射激光逻辑
+     */
+    fireLaser(source, bullet) {
+        const x = bullet.x;
+        const y = bullet.y;
+        const dir = bullet.direction;
+        const damage = bullet.damage || 5;
+
+        // 创建激光视觉特效
+        this.explosions.push({
+            x, y, 
+            dir, 
+            type: 'laser', 
+            frame: 0, 
+            life: 15 
+        });
+
+        // 激光射线检测逻辑
+        const targets = [this.player, ...Object.values(this.remotePlayers), ...this.enemies];
+        
+        // 根据方向计算射线的矩形区域（穿透整个屏幕）
+        let laserRect = null;
+        const s = CONFIG.TILE_SIZE;
+        if (dir === CONFIG.DIRECTIONS.UP) laserRect = { x: x - 2, y: 0, width: 4, height: y };
+        else if (dir === CONFIG.DIRECTIONS.DOWN) laserRect = { x: x - 2, y: y, width: 4, height: CONFIG.HEIGHT - y };
+        else if (dir === CONFIG.DIRECTIONS.LEFT) laserRect = { x: 0, y: y - 2, width: x, height: 4 };
+        else if (dir === CONFIG.DIRECTIONS.RIGHT) laserRect = { x: x, y: y - 2, width: CONFIG.WIDTH - x, height: 4 };
+
+        if (!laserRect) return; // 安全检查
+
+        // 1. 穿透打击坦克
+        targets.forEach(tank => {
+            if (!tank.active || tank === source) return;
+            if (this._checkCollision(laserRect, tank.getRect())) {
+                this.createExplosion(tank.x + 16, tank.y + 16);
+                
+                // 统一伤害逻辑
+                if (tank === this.player) {
+                    if (!this.player.isShielded) {
+                        this.hp -= damage;
+                        this.updateHUD();
+                        if (this.isMultiplayer && this.socket) this.socket.emit('playerHit', { hp: this.hp });
+                        if (this.hp <= 0) this.gameOver();
+                    }
+                } else {
+                    // 处理普通坦克(EnemyTank)和远程玩家(RemoteTank)
+                    tank.hp -= damage;
+                    if (tank.hp <= 0) {
+                        tank.active = false;
+                        if (this.isMultiplayer && this.socket) {
+                            // 如果是 AI 敌人
+                            if (tank instanceof EnemyTank) {
+                                this.socket.emit('enemyHit', { id: tank.id });
+                            }
+                            // 注意：RemoteTank 的血量由对方客户端自行处理，这里仅做本地表现
+                        } else {
+                            // 单机模式得分逻辑
+                            if (tank instanceof EnemyTank) {
+                                this.score += (tank.isElite ? 500 : 100);
+                                this.updateHUD();
+                                // 精英怪必掉道具
+                                if (tank.isElite || Math.random() < CONFIG.POWERUP_CHANCE) {
+                                    const types = Object.values(CONFIG.POWERUP_TYPES);
+                                    this.powerups.push(new Powerup(tank.x, tank.y, types[Math.floor(Math.random() * types.length)]));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // 2. 穿透打击地图 (激光可以瞬间开出一条路)
+        const colStart = Math.floor(laserRect.x / s);
+        const colEnd = Math.ceil((laserRect.x + laserRect.width) / s);
+        const rowStart = Math.floor(laserRect.y / s);
+        const rowEnd = Math.ceil((laserRect.y + laserRect.height) / s);
+
+        for (let r = rowStart; r < rowEnd; r++) {
+            for (let c = colStart; c < colEnd; c++) {
+                if (this.map.grid[r] && this.map.grid[r][c]) {
+                    const type = this.map.grid[r][c];
+                    // 核心修复：激光仅破坏砖墙，不再破坏铁墙（但会穿透过去）
+                    if (type === CONFIG.TILE_TYPES.BRICK) {
+                        this.map.grid[r][c] = CONFIG.TILE_TYPES.EMPTY;
+                        if (this.isMultiplayer && this.socket) {
+                            this.socket.emit('tileDestroyed', { row: r, col: c, bulletType: 'normal' });
+                        }
+                    } else if (type === CONFIG.TILE_TYPES.BASE) {
+                        this.gameOver();
+                        if (this.isMultiplayer && this.socket) {
+                            this.socket.emit('tileDestroyed', { row: r, col: c, bulletType: 'normal' });
+                        }
+                    }
+                }
+            }
+        }
+        
+        AudioManager.playExplosion(); // 激光音效暂时借用爆炸声
     }
 
     start(multiplayer = false) {
@@ -126,6 +233,13 @@ class Game {
         if (!this.isMultiplayer) {
             this.spawnSingleElite();
         }
+
+        // 为测试添加：开局在玩家前方生成一个激光道具
+        const laserX = startX;
+        const laserY = startY - CONFIG.TILE_SIZE * 2;
+        const testLaser = new Powerup(laserX, laserY, CONFIG.POWERUP_TYPES.LASER);
+        testLaser.id = 'test_laser_' + Date.now();
+        this.powerups.push(testLaser);
     }
 
     /**
@@ -245,9 +359,18 @@ class Game {
         });
 
         this.socket.on('enemyShoot', (data) => {
-            const b = new Bullet(data.x, data.y, data.direction, data.type || 'enemy');
-            if (data.isElite) b.isElite = true; // 标记精英子弹
-            this.bullets.push(b);
+            if (data.isLaser) {
+                // 如果是激光，查找发射源
+                const source = data.playerId ? this.remotePlayers[data.playerId] : null;
+                const b = new Bullet(data.x, data.y, data.direction, 'enemy');
+                b.isLaser = true;
+                b.damage = 5;
+                this.fireLaser(source, b);
+            } else {
+                const b = new Bullet(data.x, data.y, data.direction, data.type || 'enemy');
+                if (data.isElite) b.isElite = true; // 标记精英子弹
+                this.bullets.push(b);
+            }
         });
 
         this.socket.on('currentPowerups', (powerupsData) => {
@@ -398,10 +521,16 @@ class Game {
     }
 
     gameLoop() {
-        if (this.state === 'PLAYING') {
-            this.update();
+        try {
+            if (this.state === 'PLAYING') {
+                this.update();
+            }
+            this.draw();
+        } catch (error) {
+            console.error('游戏循环崩溃:', error);
+            this.looping = false; // 允许下次尝试重新启动循环
+            return; // 停止当前循环
         }
-        this.draw();
         requestAnimationFrame(() => this.gameLoop());
     }
 
@@ -458,12 +587,6 @@ class Game {
 
         // 5. 更新道具拾取
         this._updatePowerups(dt);
-
-        // 6. 清理特效
-        this.explosions.forEach((exp, index) => {
-            exp.frame++;
-            if (exp.frame > (exp.isSmall ? 10 : 20)) this.explosions.splice(index, 1);
-        });
     }
 
     _updateBullets() {
@@ -624,6 +747,19 @@ class Game {
                 this.powerups.splice(i, 1);
             }
         }
+        
+        // 更新激光和普通特效的生命周期
+        this.explosions.forEach(exp => {
+            exp.frame++;
+        });
+        
+        // 过滤掉已过期的特效
+        this.explosions = this.explosions.filter(exp => {
+            const maxFrame = exp.type === 'laser' ? (exp.life || 15) : (exp.isSmall ? 10 : 20);
+            return exp.frame <= maxFrame;
+        });
+
+        // 仅在单机模式下清理非活跃敌人 (联机模式由服务端同步删除)
         if (!this.isMultiplayer) {
             this.enemies = this.enemies.filter(e => e.active);
         }
@@ -631,7 +767,7 @@ class Game {
 
     applyPowerup(type) {
         // 联机模式下，大部分道具效果通过服务器广播同步
-        // 只有 LIFE 和 SHIELD 是个人私有的 (虽然 SHIELD 状态需要广播给别人看)
+        // 只有 LIFE, SHIELD 和 LASER 是个人私有的
         if (this.isMultiplayer) {
             if (type === CONFIG.POWERUP_TYPES.LIFE) {
                 this.hp++;
@@ -649,11 +785,15 @@ class Game {
                     }
                 }, 10000);
             }
+            if (type === CONFIG.POWERUP_TYPES.LASER) {
+                this.player.laserCount = 5;
+            }
             return;
         }
 
         switch(type) {
             case CONFIG.POWERUP_TYPES.LIFE: this.hp++; break;
+            case CONFIG.POWERUP_TYPES.LASER: this.player.laserCount = 5; break;
             case CONFIG.POWERUP_TYPES.SHIELD:
                 if (this.player) {
                     this.player.isShielded = true;
@@ -706,8 +846,17 @@ class Game {
         this.bullets.forEach(bullet => bullet.draw(this.ctx));
         
         this.map.draw(this.ctx, 'top');
-        this.explosions.forEach(exp => SpriteRenderer.drawExplosion(this.ctx, exp.x, exp.y, exp.frame, exp.isSmall));
+        this.explosions.forEach(exp => {
+            if (exp.type === 'laser') {
+                SpriteRenderer.drawExplosion(this.ctx, exp.x, exp.y, exp.frame, false, 'laser', exp.dir);
+            } else {
+                SpriteRenderer.drawExplosion(this.ctx, exp.x, exp.y, exp.frame, exp.isSmall);
+            }
+        });
     }
 }
 
-window.onload = () => { window.game = new Game(); };
+// 核心修复：确保实例化代码在文件末尾，且不重复
+if (!window.game) {
+    window.game = new Game();
+}

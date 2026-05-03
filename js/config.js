@@ -12,6 +12,7 @@ const CONFIG = {
     ENEMY_SPEED: 2,
     BULLET_SPEED: 6,
     BULLET_SIZE: 6,
+    TANK_HP: 1,                 // 普通坦克血量
     
     // 游戏机制
     INITIAL_HP: 5,
@@ -25,7 +26,8 @@ const CONFIG = {
         STAR: 'star',           // 提升射击速度 (临时)
         SHOVEL: 'shovel',       // 临时加固老家 (暂定逻辑)
         REPAIR: 'repair',       // 修复老家围墙
-        SHIELD: 'shield'        // 护盾无敌
+        SHIELD: 'shield',       // 护盾无敌
+        LASER: 'laser'          // 激光武器
     },
     POWERUP_CHANCE: 0.2,        // 击败敌人掉落道具的概率
 

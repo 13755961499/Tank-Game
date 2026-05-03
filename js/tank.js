@@ -12,6 +12,7 @@ class Tank {
         this.active = true;
         this.isElite = false; // 显式初始化精英怪标识
         this.isShielded = false; // 护盾状态
+        this.laserCount = 0; // 激光子弹剩余数量
         this.lastShotTime = 0;
         this.shootInterval = 500; // 射击冷却 (ms)
     }
@@ -52,6 +53,16 @@ class Tank {
             }
             
             AudioManager.playShoot();
+            
+            // 如果有激光次数，发射激光
+            if (this.laserCount > 0) {
+                this.laserCount--;
+                const bullet = new Bullet(bx, by, this.direction, this instanceof PlayerTank ? 'player' : 'enemy');
+                bullet.isLaser = true;
+                bullet.damage = 5;
+                return bullet;
+            }
+            
             return new Bullet(bx, by, this.direction, this instanceof PlayerTank ? 'player' : 'enemy');
         }
         return null;
@@ -171,5 +182,54 @@ class EnemyTank extends Tank {
             return this.shoot();
         }
         return null;
+    }
+}
+
+/**
+ * 子弹类
+ */
+class Bullet {
+    constructor(x, y, direction, owner) {
+        this.x = x;
+        this.y = y;
+        this.direction = direction;
+        this.owner = owner; // 'player' or 'enemy'
+        this.speed = CONFIG.BULLET_SPEED;
+        this.active = true;
+        this.isElite = false; // 精英怪子弹
+        this.isLaser = false; // 激光子弹
+        this.damage = 1;      // 默认伤害
+    }
+
+    update() {
+        if (this.isLaser) {
+            // 激光是瞬发的，逻辑在 game.js 处理，这里直接设为失效
+            this.active = false;
+            return;
+        }
+        switch(this.direction) {
+            case CONFIG.DIRECTIONS.UP: this.y -= this.speed; break;
+            case CONFIG.DIRECTIONS.DOWN: this.y += this.speed; break;
+            case CONFIG.DIRECTIONS.LEFT: this.x -= this.speed; break;
+            case CONFIG.DIRECTIONS.RIGHT: this.x += this.speed; break;
+        }
+        
+        if (this.x < 0 || this.x > CONFIG.WIDTH || this.y < 0 || this.y > CONFIG.HEIGHT) {
+            this.active = false;
+        }
+    }
+
+    getRect() {
+        return {
+            x: this.x - CONFIG.BULLET_SIZE / 2,
+            y: this.y - CONFIG.BULLET_SIZE / 2,
+            width: CONFIG.BULLET_SIZE,
+            height: CONFIG.BULLET_SIZE
+        };
+    }
+
+    draw(ctx) {
+        if (!this.active || this.isLaser) return;
+        SpriteRenderer.drawBullet(ctx, this.x, this.y);
     }
 }

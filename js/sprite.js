@@ -148,7 +148,11 @@ const SpriteRenderer = {
         ctx.restore();
     },
 
-    drawExplosion(ctx, x, y, frame, isSmall = false) {
+    drawExplosion(ctx, x, y, frame, isSmall = false, type = 'normal', dir = 0) {
+        if (type === 'laser') {
+            this.drawLaserEffect(ctx, x, y, dir, frame);
+            return;
+        }
         const maxRadius = isSmall ? 10 : 25;
         const currentRadius = (frame / (isSmall ? 10 : 20)) * maxRadius;
         
@@ -160,20 +164,49 @@ const SpriteRenderer = {
     },
 
     /**
+     * 绘制激光射线特效
+     */
+    drawLaserEffect(ctx, x, y, dir, frame) {
+        ctx.save();
+        const alpha = 1 - frame / 15;
+        ctx.strokeStyle = `rgba(0, 255, 255, ${alpha})`;
+        ctx.lineWidth = 4;
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = '#00ffff';
+
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        
+        // 根据方向绘制延伸到屏幕边缘的线
+        if (dir === CONFIG.DIRECTIONS.UP) ctx.lineTo(x, 0);
+        else if (dir === CONFIG.DIRECTIONS.DOWN) ctx.lineTo(x, CONFIG.HEIGHT);
+        else if (dir === CONFIG.DIRECTIONS.LEFT) ctx.lineTo(0, y);
+        else if (dir === CONFIG.DIRECTIONS.RIGHT) ctx.lineTo(CONFIG.WIDTH, y);
+        
+        ctx.stroke();
+
+        // 绘制中心白光
+        ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        
+        ctx.restore();
+    },
+
+    /**
      * 绘制道具
      */
     drawPowerup(ctx, x, y, type) {
         const s = CONFIG.TILE_SIZE;
         ctx.save();
         
-        // 绘制背景框
+        // 绘制背景框 (兼容性处理：使用 fillRect 代替 roundRect)
         ctx.fillStyle = CONFIG.COLORS.POWERUP;
-        ctx.beginPath();
-        ctx.roundRect(x + 2, y + 2, s - 4, s - 4, 4);
-        ctx.fill();
+        ctx.fillRect(x + 2, y + 2, s - 4, s - 4);
+        
         ctx.strokeStyle = 'white';
         ctx.lineWidth = 2;
-        ctx.stroke();
+        ctx.strokeRect(x + 2, y + 2, s - 4, s - 4);
 
         // 绘制图标内容
         ctx.fillStyle = 'white';
@@ -186,8 +219,10 @@ const SpriteRenderer = {
             case CONFIG.POWERUP_TYPES.LIFE: icon = '❤'; break;
             case CONFIG.POWERUP_TYPES.BOMB: icon = '💣'; break;
             case CONFIG.POWERUP_TYPES.STAR: icon = '⭐'; break;
-            case CONFIG.POWERUP_TYPES.SHOVEL: icon = '🛡'; break;
-            case CONFIG.POWERUP_TYPES.SHIELD: icon = '💎'; break;
+            case CONFIG.POWERUP_TYPES.SHOVEL: icon = '🧱'; break; // 改为砖块，表示加固
+            case CONFIG.POWERUP_TYPES.REPAIR: icon = '🔧'; break; // 扳手，表示修复
+            case CONFIG.POWERUP_TYPES.SHIELD: icon = '💎'; break; // 宝石作为护盾
+            case CONFIG.POWERUP_TYPES.LASER: icon = '⚡'; break;  // 闪电表示激光
         }
         ctx.fillText(icon, x + s/2, y + s/2);
         
