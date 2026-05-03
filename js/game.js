@@ -26,6 +26,8 @@ class Game {
         this.keys = {};
         this.initEvents();
         this.updateHUD();
+        this.bossHudEl = document.getElementById('boss-hp-hud');
+        this.bossHpValueEl = document.getElementById('boss-hp-value');
     }
 
     initEvents() {
@@ -72,7 +74,7 @@ class Game {
         const x = bullet.x;
         const y = bullet.y;
         const dir = bullet.direction;
-        const damage = bullet.damage || 5;
+        const damage = bullet.damage || 3;
 
         // 创建激光视觉特效
         this.explosions.push({
@@ -112,15 +114,12 @@ class Game {
                     }
                 } else {
                     // 处理普通坦克(EnemyTank)和远程玩家(RemoteTank)
-                    // BOSS 对激光有抗性，伤害固定为 2
-                    const actualDamage = tank.isBoss ? 2 : damage;
-                    
                     if (this.isMultiplayer && this.socket) {
                         // 联机模式：发送伤害给服务器，由服务器统一扣血
-                        this.socket.emit('enemyHit', { id: tank.id, damage: actualDamage });
+                        this.socket.emit('enemyHit', { id: tank.id, damage });
                     } else {
                         // 单机模式：本地扣血
-                        tank.hp -= actualDamage;
+                        tank.hp -= damage;
                         if (tank.hp <= 0) {
                             tank.active = false;
                             if (tank.isBoss) {
@@ -274,6 +273,7 @@ class Game {
         const spawnPoint = enemyPoints[Math.floor(Math.random() * enemyPoints.length)];
         const boss = new EnemyTank(spawnPoint.x * CONFIG.TILE_SIZE, spawnPoint.y * CONFIG.TILE_SIZE);
         boss.hp = 30; // 恢复正式血量
+        boss.maxHp = boss.hp;
         boss.color = CONFIG.COLORS.BOSS;
         boss.isBoss = true;
         this.enemies.push(boss);
@@ -323,12 +323,21 @@ class Game {
                         e.color = CONFIG.COLORS.ELITE;
                         e.isElite = true;
                     } else if (enemy.type === 'boss') {
-                        e.hp = 30;
+                        e.hp = enemy.hp;
+                        e.maxHp = enemy.hp;
                         e.color = CONFIG.COLORS.BOSS;
                         e.isBoss = true;
                     }
                     this.enemies.push(e);
                 }
+            }
+        });
+
+        this.socket.on('assignedPosition', (pos) => {
+            console.log(`[DEBUG] 收到服务器分配的位置: (${pos.x}, ${pos.y})`);
+            if (this.player) {
+                this.player.x = pos.x;
+                this.player.y = pos.y;
             }
         });
 
@@ -342,7 +351,8 @@ class Game {
                 e.isElite = true;
                 console.log(`[DEBUG] 已将 ${enemy.id} 标记为精英坦克`);
             } else if (enemy.type === 'boss') {
-                e.hp = 30;
+                e.hp = enemy.hp;
+                e.maxHp = enemy.hp;
                 e.color = CONFIG.COLORS.BOSS;
                 e.isBoss = true;
                 console.log(`[DEBUG] 已将 ${enemy.id} 标记为 BOSS 坦克`);
@@ -394,7 +404,7 @@ class Game {
                 const source = data.playerId ? this.remotePlayers[data.playerId] : null;
                 const b = new Bullet(data.x, data.y, data.direction, 'enemy');
                 b.isLaser = true;
-                b.damage = 5;
+                b.damage = 3;
                 this.fireLaser(source, b);
             } else {
                 const b = new Bullet(data.x, data.y, data.direction, data.type || 'enemy');
@@ -462,7 +472,9 @@ class Game {
             this.map.grid[data.row][data.col] = CONFIG.TILE_TYPES.EMPTY;
         });
 
-        this.socket.on('gameStateUpdate', (state) => {
+        this.socket.on('gameStateUpdate', (payload) => {
+            const state = typeof payload === 'string' ? payload : payload.state;
+            const isWin = typeof payload === 'string' ? false : !!payload.isWin;
             console.log(`[DEBUG] 收到游戏状态更新: ${state}`);
             if (state === 'WAITING') {
                 this.state = 'WAITING';
@@ -477,20 +489,30 @@ class Game {
                 this.state = 'PLAYING';
                 this.showWaitingScreen(false);
             } else if (state === 'GAMEOVER') {
-                // 如果是联机模式，收到 GAMEOVER 时强制将本地血量设为 0
-                if (this.isMultiplayer) {
+                // 如果是联机模式，收到 GAMEOVER 且不是胜利时，强制将本地血量设为 0
+                if (this.isMultiplayer && !isWin) {
                     this.hp = 0;
                     if (this.player) this.player.active = false;
                     this.updateHUD();
                 }
                 // 确保触发 UI 弹出
-                this.gameOver(true); 
+                this.gameOver(true, isWin); 
             }
         });
 
         this.socket.on('scoreUpdate', (score) => {
             this.score = score;
             this.updateHUD();
+            if (this.state === 'GAMEOVER') {
+                const finalScoreEl = document.getElementById('final-score');
+                if (finalScoreEl) finalScoreEl.innerText = this.score;
+                if (this.score > this.highScore) {
+                    this.highScore = this.score;
+                    localStorage.setItem('tankGame_highScore', this.highScore);
+                    const highScoreOverEl = document.getElementById('high-score-over');
+                    if (highScoreOverEl) highScoreOverEl.innerText = this.highScore;
+                }
+            }
         });
 
         this.socket.on('enemyUpdate', (data) => {
@@ -548,6 +570,22 @@ class Game {
         document.getElementById('hp-value').innerText = this.hp;
         document.getElementById('score-value').innerText = this.score;
         document.getElementById('high-score-value').innerText = this.highScore;
+    }
+
+    updateBossHUD() {
+        if (!this.bossHudEl) this.bossHudEl = document.getElementById('boss-hp-hud');
+        if (!this.bossHpValueEl) this.bossHpValueEl = document.getElementById('boss-hp-value');
+        if (!this.bossHudEl || !this.bossHpValueEl) return;
+
+        const boss = this.enemies.find(e => e && e.isBoss && e.active !== false);
+        if (!boss) {
+            this.bossHudEl.classList.add('hidden');
+            return;
+        }
+
+        const maxHp = boss.maxHp || 30;
+        this.bossHpValueEl.innerText = `${Math.max(0, boss.hp)}/${maxHp}`;
+        this.bossHudEl.classList.remove('hidden');
     }
 
     showWaitingScreen(show) {
@@ -862,7 +900,7 @@ class Game {
                 this.enemies.forEach(e => {
                     this.createExplosion(e.x+16, e.y+16);
                     if (e.isBoss) {
-                        e.hp -= 3;
+                        e.hp -= 5; // 修改：单机模式炸弹对 BOSS 也是扣 5 点
                         if (e.hp <= 0) {
                             e.active = false;
                             this.score += 5000;
@@ -878,12 +916,12 @@ class Game {
             case CONFIG.POWERUP_TYPES.STAR:
                 if (this.player) {
                     this.player.shootInterval = 200;
-                    setTimeout(() => { if (this.player) this.player.shootInterval = 500; }, 5000);
+                    setTimeout(() => { if (this.player) this.player.shootInterval = 500; }, 10000);
                 }
                 break;
             case CONFIG.POWERUP_TYPES.SHOVEL:
                 this.map.reinforceBase(true);
-                setTimeout(() => this.map.reinforceBase(false), 10000);
+                setTimeout(() => this.map.reinforceBase(false), 30000);
                 break;
             case CONFIG.POWERUP_TYPES.REPAIR:
                 this.map.grid[CONFIG.MAP_ROWS - 2][Math.floor(CONFIG.MAP_COLS / 2) - 1] = CONFIG.TILE_TYPES.BRICK;
@@ -908,6 +946,8 @@ class Game {
     draw() {
         this.ctx.fillStyle = CONFIG.COLORS.BG;
         this.ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+
+        this.updateBossHUD();
 
         this.map.draw(this.ctx, 'bottom');
         

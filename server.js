@@ -23,6 +23,7 @@ let powerups = {}; // 服务端管理的道具
 let powerupIdCounter = 0;
 let gameState = 'WAITING'; // WAITING, PLAYING, GAMEOVER
 let eliteSpawnTimer = null; // 精英坦克生成定时器
+let hasSpawnedInitialLasers = false; // 记录是否已经发放过开局激光
 
 // 初始化服务端地图数据 (用于 AI 碰撞检测)
 function initServerMap() {
@@ -196,7 +197,8 @@ function spawnEnemy(type = 'ai') {
         y: bestPoint.y,
         direction: 1, // DOWN
         type: type,
-        hp: type === 'boss' ? 30 : (type === 'elite' ? 5 : 1) // 恢复正式血量配置
+        hp: type === 'boss' ? 30 : (type === 'elite' ? 5 : 1), // 恢复正式血量配置
+        lastShootTime: 0 // 初始化射击时间
     };
     if (type === 'boss') bossSpawned = true;
     io.emit('enemySpawned', enemies[id]);
@@ -214,7 +216,7 @@ function startEliteCycle() {
     }, 500);
 
     eliteSpawnTimer = setInterval(() => {
-        if (gameState === 'PLAYING' && Object.keys(players).length >= 1) {
+        if (gameState === 'PLAYING' && Object.keys(players).length >= 2) {
             console.log('[SERVER] 30秒周期：尝试生成精英坦克');
             spawnEnemy('elite');
         }
@@ -278,8 +280,10 @@ function updateAI() {
             }
         }
 
-        // 3. 随机射击逻辑 (增加射击同步)
-        if (Math.random() < 0.08) {
+        // 3. 随机射击逻辑 (增加射击频率限制：不低于 0.5s)
+        const now = Date.now();
+        if (now - enemy.lastShootTime > 500 && Math.random() < 0.1) {
+            enemy.lastShootTime = now;
             // 计算子弹起始位置（炮管口）
             let bx = enemy.x + 16;
             let by = enemy.y + 16;
@@ -344,16 +348,41 @@ io.on('connection', (socket) => {
 
     // 处理新玩家加入
     socket.on('join', (playerData) => {
+        let finalX = playerData.x;
+        let finalY = playerData.y;
+
+        // 核心修复：检查位置冲突。如果该位置已被其他玩家占用，则自动切换到另一个出生点
+        const spawnPoints = [
+            { x: 10 * 32, y: 18 * 32 },
+            { x: 16 * 32, y: 18 * 32 }
+        ];
+
+        for (let pid in players) {
+            const p = players[pid];
+            if (Math.abs(p.x - finalX) < 32 && Math.abs(p.y - finalY) < 32) {
+                // 发生重叠，切换到另一个点
+                const otherPoint = spawnPoints.find(pt => Math.abs(pt.x - finalX) > 10);
+                if (otherPoint) {
+                    finalX = otherPoint.x;
+                    finalY = otherPoint.y;
+                }
+                break;
+            }
+        }
+
         players[socket.id] = {
             id: socket.id,
-            x: playerData.x,
-            y: playerData.y,
+            x: finalX,
+            y: finalY,
             direction: playerData.direction,
             color: playerData.color,
             hp: playerData.hp,
             score: playerData.score
         };
-        console.log(`玩家 ${socket.id} 加入游戏，当前在线人数: ${Object.keys(players).length}`);
+        console.log(`玩家 ${socket.id} 加入游戏，最终位置: (${finalX}, ${finalY})`);
+
+        // 告知客户端其最终分配的位置
+        socket.emit('assignedPosition', { x: finalX, y: finalY });
 
         // 广播给其他玩家
         socket.broadcast.emit('playerJoined', players[socket.id]);
@@ -364,24 +393,18 @@ io.on('connection', (socket) => {
         // 发送当前存在的道具给新玩家 (始终发送，确保同步)
         socket.emit('currentPowerups', powerups);
         
-        // 核心修复：为每个新加入的玩家生成一个开局激光（同步到全服），确保测试可用
-        const powerupId = `pw_init_laser_${socket.id}`;
-        powerups[powerupId] = {
-            id: powerupId,
-            x: playerData.x,
-            y: playerData.y - 64, // 在玩家上方两格生成
-            type: 'laser'
-        };
-        io.emit('powerupSpawned', powerups[powerupId]);
-
         // 发送当前游戏状态
         socket.emit('gameStateUpdate', gameState);
 
-        // 检查人数是否足够开始游戏 (修改：为了方便测试，1 人即可开始，但逻辑建议 2 人)
-        if (gameState === 'WAITING' && Object.keys(players).length >= 1) {
+        // 检查人数是否足够开始游戏 (修改：要求至少 2 人开始)
+        if (gameState === 'WAITING' && Object.keys(players).length >= 2) {
             gameState = 'PLAYING';
             io.emit('gameStateUpdate', 'PLAYING');
             console.log(`[SERVER] 玩家人数足够 (${Object.keys(players).length}人)，游戏开始！`);
+            
+            // 核心修复：每次游戏开始时为所有玩家生成激光道具
+            spawnInitialLasers();
+            
             startEliteCycle(); // 开启精英坦克循环
             // 立即生成一个 AI
             if (Object.keys(enemies).length === 0) {
@@ -389,6 +412,24 @@ io.on('connection', (socket) => {
             }
         }
     });
+
+    // 辅助函数：为所有玩家生成开局激光
+    function spawnInitialLasers() {
+        for (let pid in players) {
+            const p = players[pid];
+            const powerupId = `pw_init_laser_${pid}`;
+            // 如果该位置已经有道具了，先删除（防止重复）
+            if (powerups[powerupId]) delete powerups[powerupId];
+            
+            powerups[powerupId] = {
+                id: powerupId,
+                x: p.x,
+                y: p.y - 64,
+                type: 'laser'
+            };
+            io.emit('powerupSpawned', powerups[powerupId]);
+        }
+    }
 
     // 处理玩家移动
     socket.on('playerMove', (moveData) => {
@@ -423,21 +464,26 @@ io.on('connection', (socket) => {
                 const enemyPos = { x: enemy.x, y: enemy.y };
                 const isElite = enemy.type === 'elite';
                 const isBoss = enemy.type === 'boss';
+                let shouldWin = false;
                 
                 delete enemies[data.id];
                 
                 // 增加团队分数
                 if (isBoss) {
+                    bossSpawned = false; // 核心修复：BOSS 死亡后重置生成标识
                     teamScore += 5000;
                     if (gameState === 'PLAYING') {
                         gameState = 'GAMEOVER';
-                        io.emit('gameStateUpdate', 'GAMEOVER');
+                        shouldWin = true;
                     }
                 } else {
                     teamScore += isElite ? 500 : 100;
                 }
                 
                 io.emit('scoreUpdate', teamScore);
+                if (shouldWin) {
+                    io.emit('gameStateUpdate', { state: 'GAMEOVER', isWin: true });
+                }
                 io.emit('enemyDestroyed', data.id);
 
                 // 道具生成逻辑
@@ -502,28 +548,33 @@ io.on('connection', (socket) => {
         eliteSpawnTimer = null;
         initServerMap();
         
-        // 核心修复：重置后立即检查人数，决定是 WAITING 还是 PLAYING
-        if (Object.keys(players).length >= 1) {
+        // 核心修复：重置后立即检查人数，决定是 WAITING 还是 PLAYING (要求至少 2 人)
+        if (Object.keys(players).length >= 2) {
             gameState = 'PLAYING';
             console.log(`[SERVER] 玩家 ${socket.id} 请求重置，人数充足 (${Object.keys(players).length}人)，游戏开始`);
+            
+            // 重置时为每个玩家分配不同的出生点
+            const spawnPoints = [
+                { x: 10 * 32, y: 18 * 32 },
+                { x: 16 * 32, y: 18 * 32 }
+            ];
+            let idx = 0;
+            for (let pid in players) {
+                const point = spawnPoints[idx % spawnPoints.length];
+                players[pid].x = point.x;
+                players[pid].y = point.y;
+                io.to(pid).emit('assignedPosition', point);
+                idx++;
+            }
+
+            spawnInitialLasers(); // 每次重新开始都发放激光
             startEliteCycle();
         } else {
             gameState = 'WAITING';
             console.log(`[SERVER] 玩家 ${socket.id} 请求重置，人数不足，等待中`);
         }
 
-        // 测试专用：重置时为每个玩家生成一个测试激光道具
-        for (let pid in players) {
-            const p = players[pid];
-            const powerupId = `pw_test_laser_${powerupIdCounter++}`;
-            powerups[powerupId] = {
-                id: powerupId,
-                x: p.x,
-                y: p.y - 64, // 在玩家上方生成
-                type: 'laser'
-            };
-        }
-        
+        // 确保在连接成功后发送重置指令
         io.emit('scoreUpdate', teamScore);
         io.emit('mapUpdate', mapData);
         io.emit('currentPowerups', powerups);
@@ -559,17 +610,19 @@ io.on('connection', (socket) => {
             // 1. 如果是炸弹，同步全屏爆炸
             if (type === 'bomb') {
                 const enemiesToDelete = [];
+                let shouldWin = false;
                 for (let eid in enemies) {
                     const enemy = enemies[eid];
                     if (enemy.type === 'boss') {
-                        enemy.hp -= 3;
+                        enemy.hp -= 5; // 修改：炸弹对 BOSS 固定扣 5 点伤害
                         io.emit('enemyUpdate', { id: eid, hp: enemy.hp }); // 同步 BOSS 血量
                         if (enemy.hp <= 0) {
                             enemiesToDelete.push(eid);
+                            bossSpawned = false; // 核心修复：BOSS 被炸弹炸死后重置生成标识
                             teamScore += 5000;
                             if (gameState === 'PLAYING') {
                                 gameState = 'GAMEOVER';
-                                io.emit('gameStateUpdate', 'GAMEOVER');
+                                shouldWin = true;
                             }
                         }
                     } else {
@@ -585,25 +638,28 @@ io.on('connection', (socket) => {
                 });
 
                 io.emit('scoreUpdate', teamScore);
-                io.emit('allEnemiesDestroyed');
+                if (shouldWin) {
+                    io.emit('gameStateUpdate', { state: 'GAMEOVER', isWin: true });
+                }
+                // 核心修复：不再发送 allEnemiesDestroyed，因为 Boss 可能会幸存
+                // 具体的敌人销毁由 enemyDestroyed 处理，客户端会负责对应的爆炸效果
+                // io.emit('allEnemiesDestroyed'); 
             }
             
             // 2. 如果是铲子，同步基地加固
             if (type === 'shovel') {
                 io.emit('baseReinforce', true);
-                // 10秒后自动取消加固
                 setTimeout(() => {
                     io.emit('baseReinforce', false);
-                }, 10000);
+                }, 30000);
             }
 
             // 3. 如果是星星，同步全队火力全开
             if (type === 'star') {
                 io.emit('playerBuff', { type: 'star', active: true });
-                // 5秒后自动取消
                 setTimeout(() => {
                     io.emit('playerBuff', { type: 'star', active: false });
-                }, 5000);
+                }, 10000);
             }
 
             // 4. 如果是修复，同步修复老家围墙

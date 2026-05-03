@@ -60,7 +60,7 @@ class Tank {
                 this.laserCount--;
                 const bullet = new Bullet(bx, by, this.direction, this instanceof PlayerTank ? 'player' : 'enemy');
                 bullet.isLaser = true;
-                bullet.damage = 5;
+                bullet.damage = 3;
                 return bullet;
             }
             
