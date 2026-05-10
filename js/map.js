@@ -7,6 +7,7 @@ class MapSystem {
         this.initDefaultMap();
     }
 
+
     initDefaultMap() {
         // 初始化空地图
         for (let r = 0; r < CONFIG.MAP_ROWS; r++) {
@@ -20,7 +21,7 @@ class MapSystem {
                 }
             }
         }
-
+-
         // 添加一些障碍物
         this._addBlocks(3, 3, 2, 4, CONFIG.TILE_TYPES.BRICK);
         this._addBlocks(3, 10, 2, 4, CONFIG.TILE_TYPES.BRICK);

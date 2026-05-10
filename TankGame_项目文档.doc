@@ -1,0 +1,140 @@
+<html>
+<head>
+<meta charset="UTF-8">
+<title>坦克大战（Tank Game）项目文档</title>
+<style>
+body { font-family: "Microsoft YaHei", "SimSun", sans-serif; font-size: 12pt; line-height: 1.6; }
+h1 { font-size: 20pt; margin: 0 0 12pt 0; }
+h2 { font-size: 16pt; margin: 18pt 0 8pt 0; }
+h3 { font-size: 13pt; margin: 12pt 0 6pt 0; }
+code, pre { font-family: Consolas, "Courier New", monospace; font-size: 10.5pt; }
+pre { border: 1px solid #ddd; padding: 10pt; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #666; padding: 6pt; vertical-align: top; }
+.meta { color: #555; }
+</style>
+</head>
+<body>
+<h1>坦克大战（Tank Game）项目文档</h1>
+<p class="meta">版本：以当前仓库代码为准</p>
+
+<h2>1. 项目概述</h2>
+<p>本项目为复古像素风坦克大战，支持单机与联机合作模式。</p>
+<ul>
+  <li>渲染：HTML5 Canvas</li>
+  <li>客户端：原生 JavaScript</li>
+  <li>联机：Node.js + Socket.io（服务端权威）</li>
+</ul>
+
+<h2>2. 核心玩法</h2>
+<ul>
+  <li>子弹对消：玩家子弹与敌方子弹碰撞会相互抵消</li>
+  <li>敌方类型：普通敌人 / 精英坦克 / BOSS</li>
+  <li>道具系统：击败敌人掉落，道具会在地面停留一段时间后消失</li>
+  <li>通关条件：击杀 BOSS 显示“恭喜通关！”</li>
+  <li>联机机制：至少 2 名玩家才会开始游戏；服务端统一驱动 AI；玩家出生点由服务端分配；BOSS 血量在 HUD 中显示并实时更新</li>
+</ul>
+
+<h2>3. 平衡参数（最新）</h2>
+<table>
+  <tr>
+    <th>项目</th>
+    <th>数值</th>
+  </tr>
+  <tr>
+    <td>激光伤害</td>
+    <td>固定 3（对任何敌人一致）</td>
+  </tr>
+  <tr>
+    <td>精英坦克血量</td>
+    <td>3</td>
+  </tr>
+  <tr>
+    <td>BOSS 血量</td>
+    <td>30</td>
+  </tr>
+  <tr>
+    <td>炸弹对 BOSS</td>
+    <td>固定扣 5 点</td>
+  </tr>
+  <tr>
+    <td>敌人射击频率限制</td>
+    <td>服务端限制，最低间隔 0.5s</td>
+  </tr>
+  <tr>
+    <td>道具地面停留时间</td>
+    <td>10s</td>
+  </tr>
+  <tr>
+    <td>星星（攻速）持续时间</td>
+    <td>10s</td>
+  </tr>
+  <tr>
+    <td>铲子（基地加固）持续时间</td>
+    <td>30s</td>
+  </tr>
+  <tr>
+    <td>护盾持续时间</td>
+    <td>10s</td>
+  </tr>
+</table>
+
+<h2>4. 操作说明</h2>
+<table>
+  <tr><th>按键</th><th>功能</th></tr>
+  <tr><td>↑ ↓ ← →</td><td>移动</td></tr>
+  <tr><td>Space</td><td>射击</td></tr>
+  <tr><td>ESC</td><td>暂停/继续（仅单机模式）</td></tr>
+</table>
+
+<h2>5. 运行方式</h2>
+<h3>5.1 单机模式</h3>
+<p>直接用浏览器打开 <code>index.html</code> 即可开始。</p>
+
+<h3>5.2 联机模式（本地/局域网）</h3>
+<ol>
+  <li>安装依赖</li>
+</ol>
+<pre>npm install</pre>
+<ol start="2">
+  <li>启动服务器</li>
+</ol>
+<pre>node server.js</pre>
+<ol start="3">
+  <li>访问游戏</li>
+</ol>
+<ul>
+  <li>本机：<code>http://localhost:3000</code></li>
+  <li>队友：<code>http://你的局域网IP:3000</code>（启动日志会输出可用 IP）</li>
+</ul>
+
+<h2>6. 目录结构</h2>
+<pre>.
+├── server.js          # 服务端逻辑（游戏状态、AI、道具、计分、通关）
+├── index.html         # 页面入口
+├── css/
+│   └── style.css      # UI 样式
+└── js/
+    ├── config.js      # 配置与平衡参数
+    ├── audio.js       # 音效
+    ├── sprite.js      # 绘制
+    ├── map.js         # 地图与碰撞
+    ├── tank.js        # 坦克与射击（含激光）
+    ├── powerup.js     # 道具实体（单机模式停留时间）
+    └── game.js        # 主循环、联机同步、HUD</pre>
+
+<h2>7. 联机同步要点（简述）</h2>
+<ul>
+  <li>服务端权威：敌人生成/移动/射击由服务端统一产生并广播。</li>
+  <li>客户端职责：本地输入、渲染表现、接收服务端同步并更新实体。</li>
+  <li>胜利结算：击杀 BOSS 后，服务端触发胜利标记并广播结算状态。</li>
+</ul>
+
+<h2>8. 常见问题（简述）</h2>
+<ul>
+  <li>联机无法访问：检查 Windows 防火墙是否放行 3000 端口；确保使用同一局域网 IP。</li>
+  <li>道具消失过快/过慢：联机由服务端道具到期逻辑控制；单机由 <code>powerup.js</code> 的 duration 控制。</li>
+</ul>
+
+</body>
+</html>

@@ -28,6 +28,9 @@ class Game {
         this.updateHUD();
         this.bossHudEl = document.getElementById('boss-hp-hud');
         this.bossHpValueEl = document.getElementById('boss-hp-value');
+        this.exp = 0;
+        this.level = 1;
+        this.singleExpPerLevel = 2000;
     }
 
     initEvents() {
@@ -52,7 +55,7 @@ class Game {
         const b = this.player.shoot();
         if (b) {
             if (b.isLaser) {
-                this.fireLaser(this.player, b);
+                this.fireLaser(this.player, b, true);
             } else {
                 this.bullets.push(b);
             }
@@ -70,7 +73,7 @@ class Game {
     /**
      * 发射激光逻辑
      */
-    fireLaser(source, bullet) {
+    fireLaser(source, bullet, reportToServer = false) {
         const x = bullet.x;
         const y = bullet.y;
         const dir = bullet.direction;
@@ -115,8 +118,8 @@ class Game {
                 } else {
                     // 处理普通坦克(EnemyTank)和远程玩家(RemoteTank)
                     if (this.isMultiplayer && this.socket) {
-                        // 联机模式：发送伤害给服务器，由服务器统一扣血
-                        this.socket.emit('enemyHit', { id: tank.id, damage });
+                        // 联机模式：只允许激光拥有者上报敌方伤害，避免多端重复扣血
+                        if (reportToServer) this.socket.emit('enemyHit', { id: tank.id, damage });
                     } else {
                         // 单机模式：本地扣血
                         tank.hp -= damage;
@@ -127,8 +130,9 @@ class Game {
                             }
                             // 单机模式得分逻辑
                             if (tank instanceof EnemyTank) {
-                                this.score += (tank.isElite ? 500 : 100);
-                                if (tank.isBoss) this.score += 5000;
+                                const gained = (tank.isElite ? 500 : 100) + (tank.isBoss ? 5000 : 0);
+                                this.score += gained;
+                                this.increaseExp(gained);
                                 this.updateHUD();
                                 // 精英怪和 BOSS 必掉道具
                                 if (tank.isElite || tank.isBoss || Math.random() < CONFIG.POWERUP_CHANCE) {
@@ -156,12 +160,12 @@ class Game {
                     if (type === CONFIG.TILE_TYPES.BRICK) {
                         this.map.grid[r][c] = CONFIG.TILE_TYPES.EMPTY;
                         if (this.isMultiplayer && this.socket) {
-                            this.socket.emit('tileDestroyed', { row: r, col: c, bulletType: 'normal' });
+                            if (reportToServer) this.socket.emit('tileDestroyed', { row: r, col: c, bulletType: 'normal' });
                         }
                     } else if (type === CONFIG.TILE_TYPES.BASE) {
                         this.gameOver();
                         if (this.isMultiplayer && this.socket) {
-                            this.socket.emit('tileDestroyed', { row: r, col: c, bulletType: 'normal' });
+                            if (reportToServer) this.socket.emit('tileDestroyed', { row: r, col: c, bulletType: 'normal' });
                         }
                     }
                 }
@@ -209,6 +213,8 @@ class Game {
         this.state = 'PLAYING';
         this.score = 0;
         this.hp = CONFIG.INITIAL_HP;
+        this.exp = 0;
+        this.level = 1;
         this.lastEliteSpawnTime = 0; // 单机模式精英怪计时
         this.eliteSpawnInterval = 30000; // 30秒一次
         
@@ -405,7 +411,7 @@ class Game {
                 const b = new Bullet(data.x, data.y, data.direction, 'enemy');
                 b.isLaser = true;
                 b.damage = 3;
-                this.fireLaser(source, b);
+                this.fireLaser(source, b, false);
             } else {
                 const b = new Bullet(data.x, data.y, data.direction, data.type || 'enemy');
                 if (data.isElite) b.isElite = true; // 标记精英子弹
@@ -456,6 +462,15 @@ class Game {
                     this.player.shootInterval = data.active ? 200 : 500;
                 }
             }
+        });
+
+        this.socket.on('refreshTanksFullHP', (data) => {
+            if (!data) return;
+            if (Number.isFinite(data.hp)) {
+                this.hp = data.hp;
+                this.updateHUD();
+            }
+            if (this.player) this.player.active = true;
         });
 
         this.socket.on('playerLeft', (id) => {
@@ -515,6 +530,28 @@ class Game {
             }
         });
 
+        this.socket.on('expUpdate', (data) => {
+            if (!data) return;
+            if (Number.isFinite(data.exp)) this.exp = data.exp;
+            if (Number.isFinite(data.level)) this.level = data.level;
+        });
+
+        this.socket.on('playerExp', (data) => {
+            if (!data || !data.playerId) return;
+            if (data.playerId === this.socket.id) {
+                if (Number.isFinite(data.exp)) this.exp = data.exp;
+                if (Number.isFinite(data.level)) this.level = data.level;
+            }
+        });
+
+        this.socket.on('levelUp', (data) => {
+            if (!data) return;
+            if (data.playerId === this.socket.id) {
+                if (Number.isFinite(data.newLevel)) this.level = data.newLevel;
+                if (Number.isFinite(data.triggerExp)) this.exp = data.triggerExp;
+            }
+        });
+
         this.socket.on('enemyUpdate', (data) => {
             const enemy = this.enemies.find(e => e.id === data.id);
             if (enemy) {
@@ -570,6 +607,31 @@ class Game {
         document.getElementById('hp-value').innerText = this.hp;
         document.getElementById('score-value').innerText = this.score;
         document.getElementById('high-score-value').innerText = this.highScore;
+        const levelEl = document.getElementById('level-value');
+        if (levelEl) levelEl.innerText = this.level;
+    }
+
+    getLevelFromExp(exp) {
+        const per = this.isMultiplayer ? 5000 : this.singleExpPerLevel;
+        const safe = Number.isFinite(exp) ? Math.max(0, Math.floor(exp)) : 0;
+        return Math.floor(safe / per) + 1;
+    }
+
+    increaseExp(amount) {
+        if (this.isMultiplayer) return;
+        if (!Number.isFinite(amount) || amount <= 0) return;
+        const delta = Math.floor(amount);
+        if (delta <= 0) return;
+
+        const oldLevel = this.level;
+        this.exp += delta;
+        const newLevel = this.getLevelFromExp(this.exp);
+        if (newLevel > oldLevel) {
+            this.level = newLevel;
+            this.hp = CONFIG.INITIAL_HP;
+            if (this.player) this.player.active = true;
+            this.updateHUD();
+        }
     }
 
     updateBossHUD() {
@@ -775,6 +837,7 @@ class Game {
                                 if (tank.hp <= 0) {
                                 tank.active = false;
                                 this.score += 5000;
+                                this.increaseExp(5000);
                                 this.gameOver(true, true); // 击杀胜利
                             }
                             } else if (tank.isElite) {
@@ -782,6 +845,7 @@ class Game {
                                 if (tank.hp <= 0) {
                                     tank.active = false;
                                     this.score += 500; // 精英怪 500 分
+                                    this.increaseExp(500);
                                     this.updateHUD();
                                     // 精英怪 100% 掉落道具
                                     const types = Object.values(CONFIG.POWERUP_TYPES);
@@ -790,6 +854,7 @@ class Game {
                             } else {
                                 tank.active = false;
                                 this.score += 100;
+                                this.increaseExp(100);
                                 this.updateHUD();
                                 if (Math.random() < CONFIG.POWERUP_CHANCE) {
                                     const types = Object.values(CONFIG.POWERUP_TYPES);
@@ -897,6 +962,7 @@ class Game {
                 }
                 break;
             case CONFIG.POWERUP_TYPES.BOMB: 
+                let gainedTotal = 0;
                 this.enemies.forEach(e => {
                     this.createExplosion(e.x+16, e.y+16);
                     if (e.isBoss) {
@@ -904,13 +970,17 @@ class Game {
                         if (e.hp <= 0) {
                             e.active = false;
                             this.score += 5000;
+                            gainedTotal += 5000;
                             this.gameOver(true, true);
                         }
                     } else {
                         e.active = false;
-                        this.score += (e.isElite ? 500 : 100);
+                        const gained = (e.isElite ? 500 : 100);
+                        this.score += gained;
+                        gainedTotal += gained;
                     }
                 });
+                if (gainedTotal > 0) this.increaseExp(gainedTotal);
                 this.enemies = this.enemies.filter(e => e.active);
                 break;
             case CONFIG.POWERUP_TYPES.STAR:

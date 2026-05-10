@@ -23,6 +23,8 @@ let powerups = {}; // 服务端管理的道具
 let powerupIdCounter = 0;
 let powerupTimeouts = {};
 const POWERUP_LIFETIME_MS = 10000;
+const EXP_PER_LEVEL = 5000;
+const MAX_EXP = Number.MAX_SAFE_INTEGER;
 let gameState = 'WAITING'; // WAITING, PLAYING, GAMEOVER
 let eliteSpawnTimer = null; // 精英坦克生成定时器
 let hasSpawnedInitialLasers = false; // 记录是否已经发放过开局激光
@@ -87,6 +89,105 @@ function initServerMap() {
 }
 
 initServerMap();
+
+function getLevelFromExp(totalExp) {
+    const exp = Number.isFinite(totalExp) ? Math.max(0, Math.floor(totalExp)) : 0;
+    return Math.floor(exp / EXP_PER_LEVEL) + 1;
+}
+
+function normalizeExpAmount(amount) {
+    if (!Number.isFinite(amount)) return 0;
+    const n = Math.floor(amount);
+    if (n <= 0) return 0;
+    return n;
+}
+
+function applyExpGain(player, amount) {
+    const delta = normalizeExpAmount(amount);
+    if (!delta) return { oldLevel: player.level || 1, newLevel: player.level || 1, exp: player.exp || 0, leveled: false };
+
+    const oldExp = Number.isFinite(player.exp) ? player.exp : 0;
+    const nextExp = Math.min(MAX_EXP, oldExp + delta);
+    player.exp = nextExp;
+
+    const oldLevel = Number.isFinite(player.level) ? player.level : 1;
+    const newLevel = getLevelFromExp(nextExp);
+    if (newLevel > oldLevel) {
+        player.level = newLevel;
+        return { oldLevel, newLevel, exp: nextExp, leveled: true };
+    }
+    player.level = oldLevel;
+    return { oldLevel, newLevel: oldLevel, exp: nextExp, leveled: false };
+}
+
+function refreshTanksFullHP(playerId) {
+    const p = players[playerId];
+    if (!p) {
+        console.warn(`[SERVER][RefreshTanksFullHP] 玩家不存在: ${playerId}`);
+        return;
+    }
+    if (p.hp === undefined) {
+        console.warn(`[SERVER][RefreshTanksFullHP] 玩家HP不存在: ${playerId}`);
+        return;
+    }
+    refreshPlayerFullHP(p);
+
+    io.to(playerId).emit('refreshTanksFullHP', { hp: p.hp, maxHp: p.maxHp });
+    io.emit('playerUpdate', p);
+}
+
+function refreshPlayerFullHP(player) {
+    if (!player) return;
+    const maxHp = Number.isFinite(player.maxHp) ? player.maxHp : player.hp;
+    player.maxHp = maxHp;
+    player.hp = maxHp;
+    if (player.burning !== undefined) player.burning = false;
+    if (player.poisoned !== undefined) player.poisoned = false;
+    if (player.dotStacks !== undefined) player.dotStacks = 0;
+}
+
+function refreshAllPlayersFullHP() {
+    for (const pid in players) {
+        const p = players[pid];
+        if (!p) continue;
+        if (p.hp === undefined) {
+            console.warn(`[SERVER][RefreshAllPlayersFullHP] 玩家HP不存在: ${pid}`);
+            continue;
+        }
+        refreshPlayerFullHP(p);
+        io.to(pid).emit('refreshTanksFullHP', { hp: p.hp, maxHp: p.maxHp });
+        io.emit('playerUpdate', p);
+    }
+}
+
+function increaseExp(playerId, amount) {
+    const p = players[playerId];
+    if (!p) {
+        console.warn(`[SERVER][increaseExp] 玩家不存在: ${playerId}`);
+        return;
+    }
+    const delta = normalizeExpAmount(amount);
+    if (!delta) {
+        if (amount !== undefined && amount !== 0) console.warn(`[SERVER][increaseExp] 非法经验增量: ${amount}`);
+        return;
+    }
+    const before = Number.isFinite(p.exp) ? p.exp : 0;
+    const { oldLevel, newLevel, exp, leveled } = applyExpGain(p, delta);
+    if (leveled) {
+        io.emit('levelUp', { playerId, oldLevel, newLevel, triggerExp: exp });
+        refreshAllPlayersFullHP();
+    }
+    if (Number.isFinite(p.score)) p.score += delta;
+    else p.score = delta;
+    io.to(playerId).emit('expUpdate', { exp: p.exp, level: p.level });
+    if (before !== p.exp) socketSafeBroadcastExp(playerId);
+}
+
+function socketSafeBroadcastExp(playerId) {
+    const p = players[playerId];
+    if (!p) return;
+    io.emit('playerExp', { playerId, exp: p.exp || 0, level: p.level || 1 });
+}
 
 function schedulePowerupExpiry(powerupId) {
     if (powerupTimeouts[powerupId]) {
@@ -350,10 +451,11 @@ function repairBaseWalls() {
 }
 
 // 提高更新频率：从 100ms 改为 50ms
-setInterval(updateAI, 50);
+if (require.main === module) {
+    setInterval(updateAI, 50);
 
-io.on('connection', (socket) => {
-    console.log('玩家连接:', socket.id);
+    io.on('connection', (socket) => {
+        console.log('玩家连接:', socket.id);
 
     // 发送当前地图状态给新玩家
     if (mapData) {
@@ -396,7 +498,11 @@ io.on('connection', (socket) => {
             direction: playerData.direction,
             color: playerData.color,
             hp: playerData.hp,
-            score: playerData.score
+            score: playerData.score,
+            isShielded: false,
+            maxHp: playerData.hp,
+            exp: 0,
+            level: 1
         };
         console.log(`玩家 ${socket.id} 加入游戏，最终位置: (${finalX}, ${finalY})`);
 
@@ -443,7 +549,7 @@ io.on('connection', (socket) => {
             powerups[powerupId] = {
                 id: powerupId,
                 x: p.x,
-                y: p.y - 64,
+                y: p.y,
                 type: 'laser'
             };
             io.emit('powerupSpawned', powerups[powerupId]);
@@ -492,12 +598,15 @@ io.on('connection', (socket) => {
                 if (isBoss) {
                     bossSpawned = false; // 核心修复：BOSS 死亡后重置生成标识
                     teamScore += 5000;
+                    increaseExp(socket.id, 5000);
                     if (gameState === 'PLAYING') {
                         gameState = 'GAMEOVER';
                         shouldWin = true;
                     }
                 } else {
-                    teamScore += isElite ? 500 : 100;
+                    const gained = isElite ? 500 : 100;
+                    teamScore += gained;
+                    increaseExp(socket.id, gained);
                 }
                 
                 io.emit('scoreUpdate', teamScore);
@@ -588,6 +697,11 @@ io.on('connection', (socket) => {
                 const point = spawnPoints[idx % spawnPoints.length];
                 players[pid].x = point.x;
                 players[pid].y = point.y;
+                players[pid].isShielded = false;
+                players[pid].exp = 0;
+                players[pid].level = 1;
+                if (players[pid].maxHp === undefined) players[pid].maxHp = players[pid].hp;
+                players[pid].hp = players[pid].maxHp;
                 io.to(pid).emit('assignedPosition', point);
                 idx++;
             }
@@ -620,6 +734,7 @@ io.on('connection', (socket) => {
                 }
             }
             if (data.score !== undefined) players[socket.id].score = data.score;
+            if (data.isShielded !== undefined) players[socket.id].isShielded = data.isShielded;
             socket.broadcast.emit('playerUpdate', players[socket.id]);
         }
     });
@@ -640,6 +755,7 @@ io.on('connection', (socket) => {
             if (type === 'bomb') {
                 const enemiesToDelete = [];
                 let shouldWin = false;
+                let gainedTotal = 0;
                 for (let eid in enemies) {
                     const enemy = enemies[eid];
                     if (enemy.type === 'boss') {
@@ -649,13 +765,16 @@ io.on('connection', (socket) => {
                             enemiesToDelete.push(eid);
                             bossSpawned = false; // 核心修复：BOSS 被炸弹炸死后重置生成标识
                             teamScore += 5000;
+                            gainedTotal += 5000;
                             if (gameState === 'PLAYING') {
                                 gameState = 'GAMEOVER';
                                 shouldWin = true;
                             }
                         }
                     } else {
-                        teamScore += (enemy.type === 'elite' ? 500 : 100);
+                        const gained = enemy.type === 'elite' ? 500 : 100;
+                        teamScore += gained;
+                        gainedTotal += gained;
                         enemiesToDelete.push(eid);
                     }
                 }
@@ -667,6 +786,7 @@ io.on('connection', (socket) => {
                 });
 
                 io.emit('scoreUpdate', teamScore);
+                if (gainedTotal > 0) increaseExp(socket.id, gainedTotal);
                 if (shouldWin) {
                     io.emit('gameStateUpdate', { state: 'GAMEOVER', isWin: true });
                 }
@@ -738,42 +858,44 @@ io.on('connection', (socket) => {
             console.log('[SERVER] 所有玩家已离开，重置游戏状态');
         }
     });
-});
+    });
 
-const os = require('os');
+    const os = require('os');
 
-function getLocalIPs() {
-    const interfaces = os.networkInterfaces();
-    const ips = [];
-    for (const name of Object.keys(interfaces)) {
-        for (const iface of interfaces[name]) {
-            if (iface.family === 'IPv4' && !iface.internal) {
-                ips.push({ name, address: iface.address });
+    function getLocalIPs() {
+        const interfaces = os.networkInterfaces();
+        const ips = [];
+        for (const name of Object.keys(interfaces)) {
+            for (const iface of interfaces[name]) {
+                if (iface.family === 'IPv4' && !iface.internal) {
+                    ips.push({ name, address: iface.address });
+                }
             }
         }
+        ips.sort((a, b) => {
+            if (a.address.startsWith('192.168')) return -1;
+            if (b.address.startsWith('192.168')) return 1;
+            return 0;
+        });
+        return ips;
     }
-    // 排序：优先显示 192.168 开头的常用局域网地址
-    ips.sort((a, b) => {
-        if (a.address.startsWith('192.168')) return -1;
-        if (b.address.startsWith('192.168')) return 1;
-        return 0;
+
+    const allIPs = getLocalIPs();
+
+    server.listen(PORT, '0.0.0.0', () => {
+        console.log(`坦克大战服务器已启动！`);
+        console.log(`- 本地访问: http://localhost:${PORT}`);
+        
+        if (allIPs.length > 0) {
+            console.log(`- 局域网访问地址 (请尝试以下地址):`);
+            allIPs.forEach(ip => {
+                console.log(`  > http://${ip.address}:${PORT}  (${ip.name})`);
+            });
+        }
+
+        console.log(`\n提示: 如果他人无法访问，请检查 Windows 防火墙是否允许 ${PORT} 端口。`);
+        console.log(`注意: 2.0.0.1 通常是虚拟网卡(如虚拟机的网卡)，联机请优先使用 192.168.x.x 开头的地址。`);
     });
-    return ips;
 }
 
-const allIPs = getLocalIPs();
-
-server.listen(PORT, '0.0.0.0', () => {
-    console.log(`坦克大战服务器已启动！`);
-    console.log(`- 本地访问: http://localhost:${PORT}`);
-    
-    if (allIPs.length > 0) {
-        console.log(`- 局域网访问地址 (请尝试以下地址):`);
-        allIPs.forEach(ip => {
-            console.log(`  > http://${ip.address}:${PORT}  (${ip.name})`);
-        });
-    }
-
-    console.log(`\n提示: 如果他人无法访问，请检查 Windows 防火墙是否允许 ${PORT} 端口。`);
-    console.log(`注意: 2.0.0.1 通常是虚拟网卡(如虚拟机的网卡)，联机请优先使用 192.168.x.x 开头的地址。`);
-});
+module.exports = { EXP_PER_LEVEL, getLevelFromExp, normalizeExpAmount, applyExpGain, refreshPlayerFullHP, refreshAllPlayersFullHP, increaseExp, refreshTanksFullHP };
