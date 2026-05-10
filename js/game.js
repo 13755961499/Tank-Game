@@ -178,6 +178,8 @@ class Game {
 
     start(multiplayer = false) {
         AudioManager.init();
+        AudioManager.setBGMFile('assets/韩承东 - 机战王.mp3');
+        AudioManager.startBGM();
         const wasGameOver = this.state === 'GAMEOVER'; // 在修改状态前捕获旧状态
         this.isMultiplayer = multiplayer;
         
@@ -598,6 +600,7 @@ class Game {
     gameOver(force = false, isWin = false) {
         if (this.state === 'GAMEOVER' && !force) return; 
         this.state = 'GAMEOVER';
+        AudioManager.stopBGM();
         if (this.score > this.highScore) {
             this.highScore = this.score;
             localStorage.setItem('tankGame_highScore', this.highScore);

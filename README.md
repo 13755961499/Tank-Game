@@ -88,10 +88,18 @@
 npm test
 ```
 
+## 背景音乐
+
+项目内置背景音乐文件，开始游戏后自动循环播放，结算界面停止播放。
+
+- 当前曲目：`assets/韩承东 - 机战王.mp3`
+- 资源目录：`assets/`
+
 ## 目录结构
 
 ```text
 .
+├── assets/            # 背景音乐等资源
 ├── server.js          # 服务端权威：游戏状态机、AI、道具、计分、通关、EXP/LV
 ├── index.html         # 页面入口
 ├── package.json       # npm scripts（start/test）
