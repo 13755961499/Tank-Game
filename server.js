@@ -713,12 +713,11 @@ if (require.main === module) {
             console.log(`[SERVER] 玩家 ${socket.id} 请求重置，人数不足，等待中`);
         }
 
-        // 确保在连接成功后发送重置指令
         io.emit('scoreUpdate', teamScore);
         io.emit('mapUpdate', mapData);
-        io.emit('currentPowerups', powerups);
-        io.emit('currentPlayers', players); // 核心修复：重置时同步现有玩家列表，防止队友消失
+        io.emit('currentPlayers', players);
         io.emit('gameStateUpdate', gameState);
+        io.emit('currentPowerups', powerups);
     });
 
     // 处理玩家状态更新 (血量、分数等)

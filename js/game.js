@@ -31,6 +31,7 @@ class Game {
         this.exp = 0;
         this.level = 1;
         this.singleExpPerLevel = 2000;
+        this.pendingInitialLaser = false;
     }
 
     initEvents() {
@@ -250,6 +251,11 @@ class Game {
             testLaser.id = 'test_laser_' + Date.now();
             this.powerups.push(testLaser);
         }
+
+        if (this.isMultiplayer && this.pendingInitialLaser) {
+            this.applyPowerup(CONFIG.POWERUP_TYPES.LASER);
+            this.pendingInitialLaser = false;
+        }
     }
 
     /**
@@ -427,6 +433,15 @@ class Game {
             this.powerups = [];
             for (let id in powerupsData) {
                 const p = powerupsData[id];
+                if (this.isMultiplayer && this.socket && p.type === CONFIG.POWERUP_TYPES.LASER && id === `pw_init_laser_${this.socket.id}`) {
+                    this.pendingInitialLaser = true;
+                    if (this.player && this.state !== 'GAMEOVER') {
+                        this.applyPowerup(p.type);
+                        this.pendingInitialLaser = false;
+                    }
+                    this.socket.emit('powerupPicked', id);
+                    continue;
+                }
                 const newP = new Powerup(p.x, p.y, p.type);
                 newP.id = id;
                 this.powerups.push(newP);
@@ -434,6 +449,15 @@ class Game {
         });
 
         this.socket.on('powerupSpawned', (p) => {
+            if (this.isMultiplayer && this.socket && p.type === CONFIG.POWERUP_TYPES.LASER && p.id === `pw_init_laser_${this.socket.id}`) {
+                this.pendingInitialLaser = true;
+                if (this.player && this.state !== 'GAMEOVER') {
+                    this.applyPowerup(p.type);
+                    this.pendingInitialLaser = false;
+                }
+                this.socket.emit('powerupPicked', p.id);
+                return;
+            }
             const newP = new Powerup(p.x, p.y, p.type);
             newP.id = p.id;
             this.powerups.push(newP);
