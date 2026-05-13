@@ -114,6 +114,12 @@ function applyExpGain(player, amount) {
     const newLevel = getLevelFromExp(nextExp);
     if (newLevel > oldLevel) {
         player.level = newLevel;
+        const diff = newLevel - oldLevel;
+        const shouldApplyHpBonus = Object.prototype.hasOwnProperty.call(player, 'maxHp') || Object.prototype.hasOwnProperty.call(player, 'hp');
+        if (shouldApplyHpBonus) {
+            if (Number.isFinite(player.maxHp)) player.maxHp += diff;
+            else if (Number.isFinite(player.hp)) player.maxHp = player.hp + diff;
+        }
         return { oldLevel, newLevel, exp: nextExp, leveled: true };
     }
     player.level = oldLevel;
@@ -501,6 +507,7 @@ if (require.main === module) {
             score: playerData.score,
             isShielded: false,
             maxHp: playerData.hp,
+            baseMaxHp: playerData.hp,
             exp: 0,
             level: 1
         };
@@ -700,6 +707,8 @@ if (require.main === module) {
                 players[pid].isShielded = false;
                 players[pid].exp = 0;
                 players[pid].level = 1;
+                const base = Number.isFinite(players[pid].baseMaxHp) ? players[pid].baseMaxHp : players[pid].maxHp;
+                if (Number.isFinite(base)) players[pid].maxHp = base;
                 if (players[pid].maxHp === undefined) players[pid].maxHp = players[pid].hp;
                 players[pid].hp = players[pid].maxHp;
                 io.to(pid).emit('assignedPosition', point);
@@ -724,7 +733,10 @@ if (require.main === module) {
     socket.on('playerUpdate', (data) => {
         if (players[socket.id]) {
             if (data.hp !== undefined) {
-                players[socket.id].hp = data.hp;
+                const p = players[socket.id];
+                const nextHp = Number.isFinite(data.hp) ? data.hp : p.hp;
+                if (Number.isFinite(p.maxHp)) p.hp = Math.min(nextHp, p.maxHp);
+                else p.hp = nextHp;
                 // 如果任一玩家血量降为 0，游戏结束
                 if (data.hp <= 0 && gameState === 'PLAYING') {
                     gameState = 'GAMEOVER';

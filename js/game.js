@@ -7,6 +7,12 @@ class Game {
         this.ctx = this.canvas.getContext('2d');
         this.canvas.width = CONFIG.WIDTH;
         this.canvas.height = CONFIG.HEIGHT;
+        this.ctx.imageSmoothingEnabled = false;
+        this.container = document.getElementById('game-container');
+        if (this.container) this.container.style.transformOrigin = 'center center';
+        this.applyViewportScale();
+        window.addEventListener('resize', () => this.applyViewportScale());
+        document.addEventListener('fullscreenchange', () => this.applyViewportScale());
 
         this.map = new MapSystem();
         this.player = null;
@@ -19,6 +25,7 @@ class Game {
         this.score = 0;
         this.highScore = parseInt(localStorage.getItem('tankGame_highScore')) || 0;
         this.hp = CONFIG.INITIAL_HP;
+        this.maxHp = CONFIG.INITIAL_HP;
         this.state = 'START';
         this.isMultiplayer = false;
         this.socket = null;
@@ -32,6 +39,29 @@ class Game {
         this.level = 1;
         this.singleExpPerLevel = 2000;
         this.pendingInitialLaser = false;
+    }
+
+    applyViewportScale() {
+        if (!this.container) return;
+        const vw = window.innerWidth || CONFIG.WIDTH;
+        const vh = window.innerHeight || CONFIG.HEIGHT;
+        const scale = Math.min(vw / CONFIG.WIDTH, vh / CONFIG.HEIGHT);
+        const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+        this.container.style.transform = `scale(${safeScale})`;
+    }
+
+    requestFullscreen() {
+        if (document.fullscreenElement) return;
+        const target = document.documentElement;
+        const req =
+            target.requestFullscreen ||
+            target.webkitRequestFullscreen ||
+            target.msRequestFullscreen;
+        if (!req) return;
+        try {
+            const result = req.call(target);
+            if (result && typeof result.catch === 'function') result.catch(() => {});
+        } catch {}
     }
 
     initEvents() {
@@ -177,6 +207,7 @@ class Game {
     }
 
     start(multiplayer = false) {
+        this.requestFullscreen();
         AudioManager.init();
         AudioManager.setBGMFile('assets/韩承东 - 机战王.mp3');
         AudioManager.startBGM();
@@ -216,6 +247,7 @@ class Game {
         this.state = 'PLAYING';
         this.score = 0;
         this.hp = CONFIG.INITIAL_HP;
+        this.maxHp = CONFIG.INITIAL_HP;
         this.exp = 0;
         this.level = 1;
         this.lastEliteSpawnTime = 0; // 单机模式精英怪计时
@@ -496,6 +528,9 @@ class Game {
                 this.hp = data.hp;
                 this.updateHUD();
             }
+            if (Number.isFinite(data.maxHp)) {
+                this.maxHp = data.maxHp;
+            }
             if (this.player) this.player.active = true;
         });
 
@@ -655,7 +690,8 @@ class Game {
         const newLevel = this.getLevelFromExp(this.exp);
         if (newLevel > oldLevel) {
             this.level = newLevel;
-            this.hp = CONFIG.INITIAL_HP;
+            this.maxHp += (newLevel - oldLevel);
+            this.hp = this.maxHp;
             if (this.player) this.player.active = true;
             this.updateHUD();
         }
@@ -958,7 +994,7 @@ class Game {
         // 只有 LIFE, SHIELD 和 LASER 是个人私有的
         if (this.isMultiplayer) {
             if (type === CONFIG.POWERUP_TYPES.LIFE) {
-                this.hp++;
+                this.hp = Math.min(this.maxHp, this.hp + 1);
                 this.updateHUD();
                 this.socket.emit('playerUpdate', { hp: this.hp });
             }
@@ -980,7 +1016,7 @@ class Game {
         }
 
         switch(type) {
-            case CONFIG.POWERUP_TYPES.LIFE: this.hp++; break;
+            case CONFIG.POWERUP_TYPES.LIFE: this.hp = Math.min(this.maxHp, this.hp + 1); break;
             case CONFIG.POWERUP_TYPES.LASER: this.player.laserCount = 5; break;
             case CONFIG.POWERUP_TYPES.SHIELD:
                 if (this.player) {
