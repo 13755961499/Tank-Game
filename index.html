@@ -59,9 +59,32 @@
                     <span class="label">LV:</span>
                     <span id="level-value">1</span>
                 </div>
+                <div class="hud-item">
+                    <span class="label">WAVE:</span>
+                    <span id="wave-value">1</span>
+                </div>
                 <div class="hud-item hidden" id="boss-hp-hud">
                     <span class="label">BOSS:</span>
                     <span id="boss-hp-value">0</span>
+                </div>
+            </div>
+            <div id="wave-banner" class="wave-banner hidden" aria-live="polite"></div>
+            <div id="upgrade-screen" class="overlay hidden">
+                <h2>选择本波升级</h2>
+                <p>下一波开始前选择一个强化</p>
+                <div class="upgrade-options">
+                    <button class="upgrade-button" data-upgrade="speed">
+                        机动强化
+                        <small>移动速度 +0.5</small>
+                    </button>
+                    <button class="upgrade-button" data-upgrade="fire">
+                        火力强化
+                        <small>射击冷却 -60ms</small>
+                    </button>
+                    <button class="upgrade-button" data-upgrade="armor">
+                        装甲强化
+                        <small>最大生命 +1 并恢复</small>
+                    </button>
                 </div>
             </div>
         </div>
