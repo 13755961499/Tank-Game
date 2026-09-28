@@ -39,6 +39,13 @@ class Game {
         this.level = 1;
         this.singleExpPerLevel = 2000;
         this.pendingInitialLaser = false;
+        this.wave = 1;
+        this.waveState = 'ACTIVE';
+        this.waveTarget = 5;
+        this.waveSpawned = 0;
+        this.lastEnemySpawnTime = 0;
+        this.bossWarningTimer = 0;
+        this.waveBannerTimer = null;
     }
 
     applyViewportScale() {
@@ -65,13 +72,21 @@ class Game {
     }
 
     initEvents() {
-        window.addEventListener('keydown', e => this.keys[e.code] = true);
+        window.addEventListener('keydown', e => {
+            this.keys[e.code] = true;
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
+                e.preventDefault();
+            }
+        });
         window.addEventListener('keyup', e => this.keys[e.code] = false);
 
         document.getElementById('start-btn').onclick = () => this.start(false);
         document.getElementById('multi-btn').onclick = () => this.start(true);
         document.getElementById('resume-btn').onclick = () => this.togglePause();
         document.getElementById('restart-btn').onclick = () => this.start(this.isMultiplayer);
+        document.querySelectorAll('[data-upgrade]').forEach(button => {
+            button.onclick = () => this.chooseUpgrade(button.dataset.upgrade);
+        });
 
         window.addEventListener('keydown', e => {
             if (e.code === 'Escape') this.togglePause();
@@ -250,8 +265,12 @@ class Game {
         this.maxHp = CONFIG.INITIAL_HP;
         this.exp = 0;
         this.level = 1;
-        this.lastEliteSpawnTime = 0; // 单机模式精英怪计时
-        this.eliteSpawnInterval = 30000; // 30秒一次
+        this.wave = 1;
+        this.waveState = 'ACTIVE';
+        this.waveTarget = this.getWaveTarget();
+        this.waveSpawned = 0;
+        this.lastEnemySpawnTime = 0;
+        this.bossWarningTimer = 0;
         
         // 使用固定的安全出生点
         const playerPoints = CONFIG.SPAWN_POINTS.PLAYER;
@@ -272,18 +291,6 @@ class Game {
         for (let id in this.remotePlayers) {
             this.remotePlayers[id].hp = CONFIG.INITIAL_HP;
             this.remotePlayers[id].active = true;
-        }
-
-        // 单机模式开局立即生成一只精英坦克
-        if (!this.isMultiplayer) {
-            this.spawnSingleElite();
-            
-            // 为测试添加：开局在玩家前方生成一个激光道具 (仅单机模式在这里生成)
-            const laserX = startX;
-            const laserY = startY - CONFIG.TILE_SIZE * 2;
-            const testLaser = new Powerup(laserX, laserY, CONFIG.POWERUP_TYPES.LASER);
-            testLaser.id = 'test_laser_' + Date.now();
-            this.powerups.push(testLaser);
         }
 
         if (this.isMultiplayer && this.pendingInitialLaser) {
@@ -326,7 +333,95 @@ class Game {
         console.log('%c BOSS 出现了！', 'color: red; font-size: 20px; font-weight: bold;');
     }
 
-    initSocket() {
+    getWaveTarget() {
+        return 5 + Math.min(10, (this.wave - 1) * 2);
+    }
+    isBossWave() {
+        return this.wave % 5 === 0;
+    }
+    showWaveBanner(message, duration = 2200) {
+        const banner = document.getElementById('wave-banner');
+        if (!banner) return;
+        banner.innerText = message;
+        banner.classList.remove('hidden');
+        if (this.waveBannerTimer) clearTimeout(this.waveBannerTimer);
+        this.waveBannerTimer = setTimeout(() => banner.classList.add('hidden'), duration);
+    }
+    updateSinglePlayerWave() {
+        if (this.waveState === 'BOSS_WARNING') {
+            this.bossWarningTimer -= 16;
+            if (this.bossWarningTimer <= 0) {
+                this.waveState = 'BOSS';
+                this.spawnBoss();
+                this.showWaveBanner('第 ' + this.wave + ' 波 BOSS 出现！', 2600);
+            }
+            return;
+        }
+        if (this.waveState !== 'ACTIVE') return;
+        const activeEnemies = this.enemies.filter(enemy => enemy.active).length;
+        const maxOnField = Math.min(CONFIG.MAX_ENEMIES, 3 + Math.floor(this.wave / 2));
+        const now = Date.now();
+        const spawnDelay = Math.max(1200, 3000 - this.wave * 120);
+        if (this.waveSpawned >= this.waveTarget || activeEnemies >= maxOnField || now - this.lastEnemySpawnTime < spawnDelay) {
+            return;
+        }
+        const spawnElite = this.wave >= 2 && this.wave % 2 === 0 && this.waveSpawned === this.waveTarget - 1;
+        if (spawnElite) {
+            this.spawnSingleElite();
+        } else {
+            const enemyPoints = CONFIG.SPAWN_POINTS.ENEMY;
+            const spawnPoint = enemyPoints[Math.floor(Math.random() * enemyPoints.length)];
+            this.enemies.push(new EnemyTank(spawnPoint.x * CONFIG.TILE_SIZE, spawnPoint.y * CONFIG.TILE_SIZE));
+        }
+        this.waveSpawned++;
+        this.lastEnemySpawnTime = now;
+    }
+    checkWaveCompletion() {
+        if (this.isMultiplayer || this.state !== 'PLAYING') return;
+        if (this.waveSpawned < this.waveTarget || this.enemies.some(enemy => enemy.active)) return;
+        if (this.isBossWave()) {
+            if (this.waveState === 'ACTIVE') {
+                this.waveState = 'BOSS_WARNING';
+                this.bossWarningTimer = 180;
+                this.showWaveBanner('BOSS 将在 3 秒后出现！', 1800);
+            } else if (this.waveState === 'BOSS') {
+                this.beginUpgrade();
+            }
+            return;
+        }
+        this.beginUpgrade();
+    }
+    beginUpgrade() {
+        if (this.state !== 'PLAYING' || this.isMultiplayer) return;
+        this.state = 'UPGRADE';
+        this.waveState = 'UPGRADE';
+        const waveText = document.querySelector('#upgrade-screen p');
+        if (waveText) waveText.innerText = '第 ' + this.wave + ' 波完成，选择一个强化后继续';
+        const upgradeScreen = document.getElementById('upgrade-screen');
+        if (upgradeScreen) upgradeScreen.classList.remove('hidden');
+        this.showWaveBanner('第 ' + this.wave + ' 波完成', 1800);
+    }
+    chooseUpgrade(type) {
+        if (this.state !== 'UPGRADE' || !this.player) return;
+        if (type === 'speed') {
+            this.player.speed += 0.5;
+        } else if (type === 'fire') {
+            this.player.shootInterval = Math.max(180, this.player.shootInterval - 60);
+        } else if (type === 'armor') {
+            this.maxHp += 1;
+            this.hp = this.maxHp;
+        }
+        const upgradeScreen = document.getElementById('upgrade-screen');
+        if (upgradeScreen) upgradeScreen.classList.add('hidden');
+        this.wave++;
+        this.waveState = 'ACTIVE';
+        this.waveTarget = this.getWaveTarget();
+        this.waveSpawned = 0;
+        this.lastEnemySpawnTime = 0;
+        this.state = 'PLAYING';
+        this.updateHUD();
+        this.showWaveBanner('第 ' + this.wave + ' 波开始', 1600);
+    }    initSocket() {
         if (typeof io === 'undefined') {
             alert('无法加载 Socket.io。请确保你是通过 http://localhost:3000 访问游戏，并且已经运行了服务器 (node server.js)。');
             this.state = 'START';
@@ -655,6 +750,8 @@ class Game {
         
         document.getElementById('final-score').innerText = this.score;
         document.getElementById('high-score-over').innerText = this.highScore;
+        const upgradeScreen = document.getElementById('upgrade-screen');
+        if (upgradeScreen) upgradeScreen.classList.add('hidden');
         AudioManager.playExplosion();
         // 核心修复：联机模式下死亡不要立即断开连接，否则服务器可能会因为人数不足将状态切回 WAITING
         // 从而导致另一名玩家看到的是“等待加入”而不是“游戏结束”
@@ -671,6 +768,8 @@ class Game {
         document.getElementById('high-score-value').innerText = this.highScore;
         const levelEl = document.getElementById('level-value');
         if (levelEl) levelEl.innerText = this.level;
+        const waveEl = document.getElementById('wave-value');
+        if (waveEl) waveEl.innerText = this.wave;
     }
 
     getLevelFromExp(exp) {
@@ -753,30 +852,9 @@ class Game {
     update() {
         const dt = 16;
 
-        // 1. 生成敌人 (仅单机模式)
+        // 1. 生成敌人和波次状态 (仅单机模式)
         if (!this.isMultiplayer) {
-            // 普通坦克补充逻辑 (3秒补充一只，场上最多 6 只)
-            if (this.enemies.filter(e => !e.isElite).length < CONFIG.MAX_ENEMIES) {
-                if (!this.lastEnemySpawnTime) this.lastEnemySpawnTime = 0;
-                const now = Date.now();
-                if (now - this.lastEnemySpawnTime > 3000) {
-                    const enemyPoints = CONFIG.SPAWN_POINTS.ENEMY;
-                    const spawnPoint = enemyPoints[Math.floor(Math.random() * enemyPoints.length)];
-                    this.enemies.push(new EnemyTank(spawnPoint.x * CONFIG.TILE_SIZE, spawnPoint.y * CONFIG.TILE_SIZE));
-                    this.lastEnemySpawnTime = now;
-                }
-            }
-
-            // 精英坦克补充逻辑 (30秒周期，场上最多 2 只)
-            const now = Date.now();
-            if (now - this.lastEliteSpawnTime > this.eliteSpawnInterval) {
-                this.spawnSingleElite();
-            }
-
-            // BOSS 触发逻辑：1000 分且场上没有 BOSS
-            if (this.score >= 1000 && !this.enemies.some(e => e.isBoss)) {
-                this.spawnBoss();
-            }
+            this.updateSinglePlayerWave();
         }
 
         // 2. 玩家控制
@@ -794,6 +872,8 @@ class Game {
                 direction: this.player.direction
             });
         }
+
+        if (this.keys['Space']) this.handleShoot();
 
         // 3. 更新 AI (仅单机模式处理移动，网络模式由服务端同步)
         if (!this.isMultiplayer) {
@@ -986,6 +1066,7 @@ class Game {
         // 仅在单机模式下清理非活跃敌人 (联机模式由服务端同步删除)
         if (!this.isMultiplayer) {
             this.enemies = this.enemies.filter(e => e.active);
+            this.checkWaveCompletion();
         }
     }
 
