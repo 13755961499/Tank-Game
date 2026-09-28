@@ -421,7 +421,9 @@ class Game {
         this.state = 'PLAYING';
         this.updateHUD();
         this.showWaveBanner('第 ' + this.wave + ' 波开始', 1600);
-    }    initSocket() {
+    }
+
+    initSocket() {
         if (typeof io === 'undefined') {
             alert('无法加载 Socket.io。请确保你是通过 http://localhost:3000 访问游戏，并且已经运行了服务器 (node server.js)。');
             this.state = 'START';
